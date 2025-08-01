@@ -1,0 +1,161 @@
+import torch
+from itertools import combinations
+
+def MAJ(x: torch.Tensor) -> torch.Tensor:
+    """
+    Majority-gate for an odd number n of packed bit-streams with batch support.
+
+    Parameters
+    ----------
+    x : torch.Tensor, shape (batch_size, n, seq_len//32)
+        batch_size is any positive integer
+        n is any odd integer; dtype must be the same signed/unsigned int32/64
+        as produced by Transform.f2s.
+
+    Returns
+    -------
+    torch.Tensor, shape (batch_size, seq_len//32), same dtype as x
+        Packed majority bit-stream for each batch.
+    """
+    # --------------- sanity checks ---------------
+    assert x.dim() == 3, "x must be 3-D (batch_size, n, seq_len//32)"
+    batch_size, n, num_ints = x.shape
+    assert n % 2 == 1, "n must be odd so majority is well-defined"
+
+    # --------------- bitwise majority ---------------
+    shifts = torch.arange(32, device=x.device, dtype=x.dtype)              # [0 … 31]
+    bits = (x.unsqueeze(-1) >> shifts) & 1                                 # (batch_size, n, num_ints, 32)
+    votes = bits.sum(dim=1)                                                 # (batch_size, num_ints, 32)
+    maj_bit = votes >= (n // 2 + 1)                                         # bool → majority mask
+
+    # --------------- re-pack to integer ---------------
+    weights = (1 << shifts).to(x.dtype)                                     # 2**shift
+    packed = (maj_bit.to(x.dtype) * weights).sum(dim=-1)                    # (batch_size, num_ints)
+
+    return packed
+
+
+def stackMAJ(x: torch.Tensor, maj_dim: int, strict: bool = True) -> torch.Tensor:
+    """
+    Stacked majority-gate with batch support using tensorized operations.
+    Requires the number of bit-streams to be reducible by maj_dim without remainder.
+
+    Parameters
+    ----------
+    x : torch.Tensor, shape (batch_size, n, seq_len//32)
+        batch_size is any positive integer
+        n is the number of bit-streams; dtype must be the same signed/unsigned int32/64
+        Must be reducible by maj_dim in each iteration.
+    maj_dim : int
+        Number of bit-streams to group for each majority operation. Must be odd.
+
+    Returns
+    -------
+    torch.Tensor, shape (batch_size, seq_len//32), same dtype as x
+        Single packed majority bit-stream for each batch.
+    """
+    # --------------- sanity checks ---------------
+    assert x.dim() == 3, "x must be 3-D (batch_size, n, seq_len//32)"
+    assert maj_dim % 2 == 1, "maj_dim must be odd so majority is well-defined"
+    assert maj_dim >= 3, "maj_dim must be at least 3"
+
+    batch_size, n, num_ints = x.shape
+    current = x  # (batch_size, n, num_ints)
+
+    # --------------- tensorized iterative majority reduction ---------------
+    while current.shape[1] > 1:
+        current_n = current.shape[1]
+
+        if strict:
+            # Check if current_n is divisible by maj_dim
+            assert current_n % maj_dim == 0, f"Cannot divide {current_n} streams by {maj_dim} evenly"
+            num_groups = current_n // maj_dim
+        else:
+            num_groups = current_n // maj_dim
+            # If we can't form even one group, keep the first stream
+            if num_groups == 0:
+                current = current[:, :1, :]
+                break
+            # If there's more than one group but with residuals, drop the residuals
+            current = current[:, :num_groups * maj_dim, :]
+
+        # Reshape to group streams: (batch_size, num_groups, maj_dim, num_ints)
+        grouped = current.view(batch_size, num_groups, maj_dim, num_ints)
+
+        # Apply majority gate to all groups simultaneously
+        # Process each group: (batch_size * num_groups, maj_dim, num_ints)
+        grouped_flat = grouped.view(batch_size * num_groups, maj_dim, num_ints)
+
+        # Apply majority_packed_batch to all groups at once
+        maj_results = MAJ(grouped_flat)  # (batch_size * num_groups, num_ints)
+
+        # Reshape back to batch format: (batch_size, num_groups, num_ints)
+        current = maj_results.view(batch_size, num_groups, num_ints)
+
+    # Return the final single bit-stream
+    return current.squeeze(1)  # (batch_size, num_ints)
+
+
+def MAJ_sim(x: torch.Tensor) -> torch.Tensor:
+    '''
+    vectorized MAJ, support batch processing
+    :param x: [batch_size, n]
+    :return: result: [batch_size,]
+    '''
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+
+    batch_size, n = x.shape
+    majority_threshold = (n + 1) // 2
+
+    # pre-compute 1 + x and 1 - x
+    one_plus_x = 1 + x  # shape: (batch_size, n)
+    one_minus_x = 1 - x  # shape: (batch_size, n)
+
+    result = torch.zeros(batch_size, dtype=x.dtype, device=x.device)
+
+    # compute for every possible majority number in [majority_threshold, n]
+    for k in range(majority_threshold, n + 1):
+        # compute for every possible combinations that sums up to k
+        for combo in combinations(range(n), k):
+            combo_mask = torch.zeros(n, dtype=torch.bool, device=x.device)
+            combo_mask[list(combo)] = True
+
+            term = torch.ones(batch_size, dtype=x.dtype, device=x.device)
+
+            # vectorized product
+            term *= torch.prod(torch.where(combo_mask, one_plus_x, one_minus_x), dim=1)
+            result += term
+
+    return result / (2 ** (n - 1)) - 1
+
+def stackMAJ_sim(x: torch.Tensor, maj_dim: int) -> torch.Tensor:
+    '''
+    vectorized stackMAJ, support batch processing
+    :param x: [batch_size, n]
+    :param maj_dim: integer, number of inputs of a single MAJ
+    :return: result: [batch_size,]
+    '''
+
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+
+    batch_size = x.size(0)
+
+    while x.size(1) >= maj_dim:
+        current_length = x.size(1)
+        num_chunks = current_length // maj_dim
+
+        if num_chunks == 0:
+            break
+
+        # reshape to fit the input shape of MAJ
+        reshaped = x[:, :num_chunks * maj_dim].reshape(batch_size * num_chunks, maj_dim)
+
+        # conduct MAJ
+        maj_results = MAJ_sim(reshaped)
+
+        # reshape back
+        x = maj_results.reshape(batch_size, num_chunks)
+
+    return x
