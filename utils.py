@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from itertools import combinations
 
 def MAJ(x: torch.Tensor) -> torch.Tensor:
@@ -159,3 +160,44 @@ def stackMAJ_sim(x: torch.Tensor, maj_dim: int) -> torch.Tensor:
         x = maj_results.reshape(batch_size, num_chunks)
 
     return x
+
+
+def unfold_5d(stream, kernel_size, stride, padding):
+    """
+    F.unfold() can only process 4D float tensors
+    Here we mannualy implement F.unfold so that we can handle 5D int64 tensor
+    **currently no support for dilation as a parameter**
+
+    :param stream: [N, C, H, W, seq_len//32]
+    :param kernel_size: kernel size
+    :param stride: stride
+    :param padding: padding
+    :return: unfolded: [N, C*kh*kw, L, seq_len//32], where L = H_out * W_out
+    """
+    if isinstance(kernel_size, int):
+        kernel_size = (kernel_size, kernel_size)
+    if isinstance(stride, int):
+        stride = (stride, stride)
+    if isinstance(padding, int):
+        padding = (padding, padding)
+
+    N, C, H, W, num_ints = stream.shape
+    kh, kw = kernel_size
+    sh, sw = stride
+    ph, pw = padding
+
+    # add padding
+    if padding != (0, 0):
+        stream = F.pad(stream, (0, 0, pw, pw, ph, ph), mode='constant', value=0)
+        _, _, H, W, _ = stream.shape
+
+    # unfold tensor
+    stream = stream.unfold(2, kh, sh).unfold(3, kw, sw)   # [N, C, out_H, out_W, num_ints, kH, kW]
+
+    N, C, out_H, out_W, num_ints, kh, kw = stream.shape
+
+    # reshape
+    stream = stream.permute(0, 1, 5, 6, 2, 3, 4).contiguous()  # [N, C, kH, kW, out_H, out_W, num_ints]
+    stream = stream.view(N, C * kh * kw, out_H * out_W, num_ints)  # [N, C*kH*kW, L, num_ints]
+
+    return stream

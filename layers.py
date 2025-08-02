@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from abc import ABC, abstractmethod
 from itertools import combinations
 
@@ -177,7 +178,10 @@ class Slayer(ABC):
     def Sforward(self, stream):
         pass
 
+
+
 class SConv2d(Slayer, nn.Module):
+    # make sure Slayer comes before nn.Module
     def __init__(
             self,
             in_channels,
@@ -186,9 +190,18 @@ class SConv2d(Slayer, nn.Module):
             stride=1,
             padding=0,
             dilation=1,
-            bias=True):
+            bias=True,
+            seq_len=1024,
+            strict=True):
 
-        super().__init__()
+        '''
+        comments for additional parameters:
+        :param seq_len: length of bit-streams
+        :param strict: whether to check the number of stackMAJ inputs is some power of maj_dim
+        '''
+
+        super().__init__(seq_len)
+
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = nn.modules.utils._pair(kernel_size)
@@ -207,6 +220,87 @@ class SConv2d(Slayer, nn.Module):
             self.register_parameter('bias', None)
 
         self.maj_dim = self.kernel_size[0]
+        self.strict = strict
 
     def forward(self, x):
-        pass
+        N, C, H, W = x.shape
+        kh, kw = self.kernel_size
+        sh, sw = self.stride
+        ph, pw = self.padding
+        dh, dw = self.dilation
+
+        # output size
+        H_out = (H + 2 * ph - dh * (kh - 1) - 1) // sh + 1
+        W_out = (W + 2 * pw - dw * (kw - 1) - 1) // sw + 1
+
+        # unfold the input tensor using F.unfold, getting tensor [N, C_in*kh*kw, L]
+        # the "L" is the number of all possible sliding-window positions
+        # the "C_in*kh*kw" is number of pixels of a certain [C_in, kh, kw] region of input tensor
+        patches = F.unfold(x, kernel_size=self.kernel_size,
+                           padding=self.padding, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
+        weight_flat = self.weight.view(self.out_channels, -1)  # [C_out, C_in*kh*kw]
+
+        # Here the purpose is to replace the usual summation with stackMAJ in 2D convolution,
+        # so it's not appropriate to directly muptiply the two tensors. Instead, we do elementwise product first:
+        prod = patches.unsqueeze(1) * weight_flat.unsqueeze(0).unsqueeze(-1)  # [N, C_out, C_in*kh*kw, L]
+        #      [N, 1, C_in*kh*kw, L]   *       [1, C_out, C_in*kh*kw, 1]
+        # a certain element prod[n, m, k, l] means the k-th elementwise product in the l-th sliding-window position in the m-th channel of the n-th sample
+
+        # we shall next conduct stackMAJ to its 3rd dimension and squeeze this dimension
+        out_unfolded = SConv2d.stackMAJ_conv(prod, self.maj_dim)
+        out = out_unfolded.view(N, self.out_channels, H_out, W_out)
+        return out
+
+
+    def Sforward(self, stream):
+        N, C, H, W, num_ints = stream.shape     # here, num_ints means seq_len//32
+        kh, kw = self.kernel_size
+        sh, sw = self.stride
+        ph, pw = self.padding
+        dh, dw = self.dilation
+
+        # output size
+        H_out = (H + 2 * ph - dh * (kh - 1) - 1) // sh + 1
+        W_out = (W + 2 * pw - dw * (kw - 1) - 1) // sw + 1
+
+        # unfolded_manual = SConv2d.tensor_unfold_5d(stream, self.kernel_size, self.stride, self.padding)
+
+
+        # To apply F.unfold to a 5D tensor, we need to first reshape to 4D and then reshape back to 5D
+        # (1) reshape to [N*num_ints, C_in, H, W], and apply F.unfold
+        stream = stream.to(torch.float64)   # F.unfold can only process float tensors
+        stream_reshaped = stream.permute(0, 4, 1, 2, 3).contiguous().view(N * num_ints, C, H, W)
+        unfolded = F.unfold(stream_reshaped, kernel_size=self.kernel_size, stride=self.stride,
+                            padding=self.padding, dilation=self.dilation)   # [N*num_ints, C_in*kh*kw, L]
+        # (2) reshape back
+        _, feature_dim, L = unfolded.shape
+        unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1) # [N, C_in*kh*kw, L, num_ints]
+
+        unfolded = unfolded.to(torch.int64)     # convert back to int64
+
+        # prepare convolution kernel for stochastic forward propagation
+        Sweight = self.trans.f2s(self.weight)   # [C_out, C_in, kh, kw, num_ints]
+        Sweight = Sweight.view(self.out_channels, -1, num_ints) # [C_out, C_in*kh*kw, num_ints]
+
+        # elementwise product using XNOR gates
+        prod = torch.bitwise_xor(unfolded.unsqueeze(1), Sweight.unsqueeze(0).unsqueeze(-2))
+        prod = torch.bitwise_not(prod)      # [N, C_out, C_in*kh*kw, L, num_ints]
+
+        # conduct stackMAJ as summation
+        prod = prod.permute(0, 1, 3, 2, 4)  # [N, C_out, L, C_in*kh*kw, num_ints]
+        prod = prod.reshape(-1, prod.shape[-2], prod.shape[-1])     # [N*C_out*L, C_in*kh*kw, num_ints]
+        out = Slayer.stackMAJ(prod, self.maj_dim, strict=self.strict)   # [N*C_out*L, num_ints]
+        out = out.view(N, self.out_channels, L, num_ints)               # [N, C_out, L, num_ints]
+        out = out.view(N, self.out_channels, H_out, W_out, num_ints)    # [N, C_out, H_out, W_out, num_ints]
+        return out
+
+
+
+
+
+if __name__ == '__main__':
+    l = SConv2d(3, 3, 3, 1, seq_len = 64)
+    x = torch.rand(4, 3, 224, 224)
+    x = l.trans.f2s(x)
+    # print(l.Sforward(x).shape)
+    l.Sforward(x)
