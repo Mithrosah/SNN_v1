@@ -61,6 +61,8 @@ class Slayer(ABC):
             Must be reducible by maj_dim in each iteration.
         maj_dim : int
             Number of bit-streams to group for each majority operation. Must be odd.
+        strict : bool
+            whether to check the number of stackMAJ inputs(x.size(1)) is some power of maj_dim
 
         Returns
         -------
@@ -113,7 +115,7 @@ class Slayer(ABC):
         '''
         vectorized MAJ, support batch processing
         :param x: [batch_size, n]
-        :return: result: [batch_size,]
+        :return: result: [batch_size, 1]
         '''
         if x.dim() == 1:
             x = x.unsqueeze(0)
@@ -121,9 +123,7 @@ class Slayer(ABC):
         batch_size, n = x.shape
         majority_threshold = (n + 1) // 2
 
-        # pre-compute 1 + x and 1 - x
-        one_plus_x = 1 + x  # shape: (batch_size, n)
-        one_minus_x = 1 - x  # shape: (batch_size, n)
+        prob_x = (1 + x) * 0.5
 
         result = torch.zeros(batch_size, dtype=x.dtype, device=x.device)
 
@@ -137,18 +137,18 @@ class Slayer(ABC):
                 term = torch.ones(batch_size, dtype=x.dtype, device=x.device)
 
                 # vectorized product
-                term *= torch.prod(torch.where(combo_mask, one_plus_x, one_minus_x), dim=1)
+                term *= torch.prod(torch.where(combo_mask, prob_x, 1 - prob_x), dim=1)
                 result += term
 
-        return result / (2 ** (n - 1)) - 1
+        return (2 * result - 1).unsqueeze(-1)
 
     @staticmethod
-    def stackMAJ_sim(x: torch.Tensor, maj_dim: int) -> torch.Tensor:
+    def stackMAJ_sim(x: torch.Tensor, maj_dim: int, strict: bool = True) -> torch.Tensor:
         '''
         vectorized stackMAJ, support batch processing
         :param x: [batch_size, n]
         :param maj_dim: integer, number of inputs of a single MAJ
-        :return: result: [batch_size,]
+        :return: result: [batch_size, 1]
         '''
 
         if x.dim() == 1:
@@ -156,18 +156,79 @@ class Slayer(ABC):
 
         batch_size = x.size(0)
 
-        while x.size(1) >= maj_dim:
+        while x.size(1) > 1:
             current_length = x.size(1)
-            num_chunks = current_length // maj_dim
 
-            if num_chunks == 0:
-                break
+            if strict:
+                assert current_length % maj_dim == 0, "number of stackMAJ inputs must be some power of maj_dim"
+                num_chunks = current_length // maj_dim
+            else:
+                num_chunks = current_length // maj_dim
+                if num_chunks == 0:
+                    x = x[:, :1]
+                    break
+                x = x[:, :num_chunks * maj_dim]
 
             # reshape to fit the input shape of MAJ
-            reshaped = x[:, :num_chunks * maj_dim].reshape(batch_size * num_chunks, maj_dim)
+            x = x.reshape(batch_size, num_chunks, maj_dim)
+            x = x.reshape(batch_size * num_chunks, maj_dim)
 
             # conduct MAJ
-            maj_results = Slayer.MAJ_sim(reshaped)
+            maj_results = Slayer.MAJ_sim(x)
+
+            # reshape back
+            x = maj_results.reshape(batch_size, num_chunks)
+
+        return x
+
+    @staticmethod
+    def MAJ3_sim(x: torch.Tensor) -> torch.Tensor:
+        '''
+        vectorized 3-input MAJ, support batch processing
+        :param x: [batch_size, 3]
+        :return: result: [batch_size, 1]
+        '''
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+
+        x = (x + 1) * 0.5
+        x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
+        result = x1*x2*(1-x3) + x1*(1-x2)*x3 + (1-x1)*x2*x3 + x1*x2*x3
+        return (2*result - 1).unsqueeze(-1)
+
+
+    @staticmethod
+    def stackMAJ3_sim(x: torch.Tensor, strict: bool = True) -> torch.Tensor:
+        '''
+        vectorized stackMAJ3, support batch processing
+        :param x: [batch_size, n]
+        :param maj_dim: integer, number of inputs of a single MAJ
+        :return: result: [batch_size,]
+        '''
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+
+        batch_size = x.size(0)
+
+        while x.size(1) > 1:
+            current_length = x.size(1)
+
+            if strict:
+                assert current_length % 3 == 0, "number of stackMAJ inputs must be some power of maj_dim"
+                num_chunks = current_length // 3
+            else:
+                num_chunks = current_length // 3
+                if num_chunks == 0:
+                    x = x[:, :1]
+                    break
+                x = x[:, :num_chunks * 3]
+
+            # reshape to fit the input shape of MAJ
+            x = x.reshape(batch_size, num_chunks, 3)
+            x = x.reshape(batch_size * num_chunks, 3)
+
+            # conduct MAJ
+            maj_results = Slayer.MAJ3_sim(x)
 
             # reshape back
             x = maj_results.reshape(batch_size, num_chunks)
@@ -302,5 +363,4 @@ if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
     x = torch.rand(4, 3, 224, 224)
     x = l.trans.f2s(x)
-    # print(l.Sforward(x).shape)
-    l.Sforward(x)
+    print(l.Sforward(x).shape)
