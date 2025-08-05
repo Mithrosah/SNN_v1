@@ -283,6 +283,34 @@ class SConv2d(Slayer, nn.Module):
         self.maj_dim = self.kernel_size[0]
         self.strict = strict
 
+    @staticmethod
+    def stackMAJ_conv2d(prod, maj_dim, strict):
+        '''
+        stackMAJ designed for conv2d, support batch processing
+        :param prod: [N,C_out, C_in*kh*kw, L]   (conduct stackMAJ to its 3rd dimension)
+        :param maj_dim: integer, number of inputs of a single MAJ
+        :return: result: [N, C_out, L]
+        '''
+
+        N, out_channels, _, L = prod.size()
+
+        # move the target dimension(3rd) to the last, and reshape to fit the input shape of stackMAJ
+        prod = prod.movedim(2, -1)  # (N, C_out, L, C_in*kh*kw)
+        flat_tensor = prod.reshape(-1, prod.shape[-1])  # (N*C_out*L, C_in*kh*kw)
+
+        # conduct stackMAJ
+        maj_results = SConv2d.stackMAJ_sim(flat_tensor, maj_dim, strict=strict)     # [N*C_out*L, 1]
+
+        # check size of the maj_result (should be [N*C_out*L, 1]), and turn the column vector into a row vector
+        assert maj_results.size(1) == 1, "result of stackMAJ must be a single value"
+        maj_results = maj_results.squeeze(1)        # [N*C_out*L, ]
+
+        # again reshape back to [N, C_out, L]
+        result = maj_results.reshape(N, out_channels, L)
+
+        return result   # [N, C_out, L]
+
+
     def forward(self, x):
         N, C, H, W = x.shape
         kh, kw = self.kernel_size
@@ -308,8 +336,8 @@ class SConv2d(Slayer, nn.Module):
         # a certain element prod[n, m, k, l] means the k-th elementwise product in the l-th sliding-window position in the m-th channel of the n-th sample
 
         # we shall next conduct stackMAJ to its 3rd dimension and squeeze this dimension
-        out_unfolded = SConv2d.stackMAJ_conv(prod, self.maj_dim)
-        out = out_unfolded.view(N, self.out_channels, H_out, W_out)
+        out_unfolded = SConv2d.stackMAJ_conv2d(prod, self.maj_dim, strict=self.strict)  # [N, C_out, L]
+        out = out_unfolded.view(N, self.out_channels, H_out, W_out)     # [N, C_out, H_out, W_out]
         return out
 
 
@@ -362,5 +390,5 @@ class SConv2d(Slayer, nn.Module):
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
     x = torch.rand(4, 3, 224, 224)
-    x = l.trans.f2s(x)
-    print(l.Sforward(x).shape)
+    y = l(x)
+    print(y.size())
