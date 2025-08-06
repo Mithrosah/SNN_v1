@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
+import math
 
 from transform import Transform
 
@@ -151,7 +152,7 @@ class Slayer(ABC):
         vectorized stackMAJ3, support batch processing
         :param x: [batch_size, n]
         :param maj_dim: integer, number of inputs of a single MAJ
-        :return: result: [batch_size,]
+        :return: result: [batch_size, 1]
         '''
         if x.dim() == 1:
             x = x.unsqueeze(0)
@@ -258,7 +259,7 @@ class SConv2d(Slayer, nn.Module):
         flat_tensor = prod.reshape(-1, prod.shape[-1])  # (N*C_out*L, C_in*kh*kw)
 
         # conduct stackMAJ
-        maj_results = SConv2d.stackMAJ3_sim(flat_tensor, strict=self.strict)     # [N*C_out*L, 1]
+        maj_results = Slayer.stackMAJ3_sim(flat_tensor, strict=self.strict)     # [N*C_out*L, 1]
 
         # squeeze
         maj_results = maj_results.squeeze(1)        # [N*C_out*L, ]
@@ -314,14 +315,45 @@ class SConv2d(Slayer, nn.Module):
 
 
 class SLinear(Slayer, nn.Module):
-    def __init__(self, in_features, out_features):
-        pass
+    def __init__(self, in_features, out_features, seq_len=1024, strict=True, summation=True):
+        super().__init__(seq_len)
 
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, x):
+        '''
+        :param x: [batch_size, in_features]
+        :return: out: [batch_size, out_features] if summation else [batch_size, out_features, in_features]
+        '''
+
+        # elementwise product
+        prod = x.unsqueeze(1) * self.weight.unsqueeze(0)  # [batch_size, out_features, in_features]
+
+        if self.summation:
+
+            # reshape
+            N, out_features, in_features = prod.shape
+            prod = prod.reshape(N*out_features, in_features)     # [batch_size*out_features, in_features]
+
+            # conduct stackMAJ
+            out = Slayer.stackMAJ3_sim(prod, strict=self.strict)   # [batch_size*out_features, 1]
+
+            # reshape back
+            out = out.reshape(N, out_features)      # [batch_size, out_features]
+
+        else:
+            out = prod
+
+        return out
 
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
     x = torch.rand(3, 3, 224, 224)
-    x = l.trans.f2s(x)
-    print(l.Sforward(x).shape)
+    print(l(x).shape)
+
+
 
