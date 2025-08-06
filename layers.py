@@ -87,19 +87,17 @@ class Slayer(ABC):
         return packed
 
     @staticmethod
-    def stackMAJ(x: torch.Tensor, maj_dim: int, strict: bool = True) -> torch.Tensor:
+    def stackMAJ(x: torch.Tensor, strict: bool = True) -> torch.Tensor:
         """
         Stacked majority-gate with batch support using tensorized operations.
-        Requires the number of bit-streams to be reducible by maj_dim without remainder.
+        designed especially for 3-input majority gates
 
         Parameters
         ----------
         x : torch.Tensor, shape (batch_size, n, seq_len//32)
             batch_size is any positive integer
             n is the number of bit-streams; dtype must be the same signed/unsigned int32/64
-            Must be reducible by maj_dim in each iteration.
-        maj_dim : int
-            Number of bit-streams to group for each majority operation. Must be odd.
+            Must be reducible by 3 in each iteration if strict==True.
         strict : bool
             whether to check the number of stackMAJ inputs(x.size(1)) is some power of maj_dim
 
@@ -110,8 +108,6 @@ class Slayer(ABC):
         """
         # --------------- sanity checks ---------------
         assert x.dim() == 3, "x must be 3-D (batch_size, n, seq_len//32)"
-        assert maj_dim % 2 == 1, "maj_dim must be odd so majority is well-defined"
-        assert maj_dim >= 3, "maj_dim must be at least 3"
 
         batch_size, n, num_ints = x.shape
         current = x  # (batch_size, n, num_ints)
@@ -122,23 +118,23 @@ class Slayer(ABC):
 
             if strict:
                 # Check if current_n is divisible by maj_dim
-                assert current_n % maj_dim == 0, f"Cannot divide {current_n} streams by {maj_dim} evenly"
-                num_groups = current_n // maj_dim
+                assert current_n % 3 == 0, "Cannot divide {current_n} streams by 3 evenly"
+                num_groups = current_n // 3
             else:
-                num_groups = current_n // maj_dim
+                num_groups = current_n // 3
                 # If we can't form even one group, keep the first stream
                 if num_groups == 0:
                     current = current[:, :1, :]
                     break
                 # If there's more than one group but with residuals, drop the residuals
-                current = current[:, :num_groups * maj_dim, :]
+                current = current[:, :num_groups * 3, :]
 
             # Reshape to group streams: (batch_size, num_groups, maj_dim, num_ints)
-            grouped = current.view(batch_size, num_groups, maj_dim, num_ints)
+            grouped = current.view(batch_size, num_groups, 3, num_ints)
 
             # Apply majority gate to all groups simultaneously
             # Process each group: (batch_size * num_groups, maj_dim, num_ints)
-            grouped_flat = grouped.view(batch_size * num_groups, maj_dim, num_ints)
+            grouped_flat = grouped.view(batch_size * num_groups, 3, num_ints)
 
             # Apply majority_packed_batch to all groups at once
             maj_results = Slayer.MAJ(grouped_flat)  # (batch_size * num_groups, num_ints)
@@ -203,7 +199,6 @@ class SConv2d(Slayer, nn.Module):
             stride=1,
             padding=0,
             dilation=1,
-            bias=True,
             seq_len=1024,
             strict=True):
 
@@ -226,11 +221,6 @@ class SConv2d(Slayer, nn.Module):
         weight_shape = (out_channels, in_channels, kh, kw)
         self.weight = nn.Parameter(torch.empty(weight_shape))
         nn.init.kaiming_uniform_(self.weight)
-        if bias:
-            self.bias = nn.Parameter(torch.empty(out_channels))
-            nn.init.zeros_(self.bias)
-        else:
-            self.register_parameter('bias', None)
 
         self.maj_dim = self.kernel_size[0]
         self.strict = strict
@@ -317,17 +307,21 @@ class SConv2d(Slayer, nn.Module):
         # conduct stackMAJ as summation
         prod = prod.permute(0, 1, 3, 2, 4)  # [N, C_out, L, C_in*kh*kw, num_ints]
         prod = prod.reshape(-1, prod.shape[-2], prod.shape[-1])     # [N*C_out*L, C_in*kh*kw, num_ints]
-        out = Slayer.stackMAJ(prod, self.maj_dim, strict=self.strict)   # [N*C_out*L, num_ints]
+        out = Slayer.stackMAJ(prod, strict=self.strict)   # [N*C_out*L, num_ints]
         out = out.view(N, self.out_channels, L, num_ints)               # [N, C_out, L, num_ints]
         out = out.view(N, self.out_channels, H_out, W_out, num_ints)    # [N, C_out, H_out, W_out, num_ints]
         return out
 
 
+class SLinear(Slayer, nn.Module):
+    def __init__(self, in_features, out_features):
+        pass
 
 
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
-    x = torch.rand(32, 3, 224, 224)
-    y = l(x)
-    print(y.shape)
+    x = torch.rand(3, 3, 224, 224)
+    x = l.trans.f2s(x)
+    print(l.Sforward(x).shape)
+
