@@ -349,6 +349,35 @@ class SLinear(Slayer, nn.Module):
 
         return out
 
+    def Sforward(self, stream):
+        '''
+        :param stream: [batch_size, in_features, seq_len//32]
+        :return: out: [batch_size, out_features, seq_len//32] if summation else [batch_size, out_features, in_features, seq_len//32]
+        '''
+
+        batch_size, in_features, num_ints = stream.shape
+        Sweight = self.trans.f2s(self.weight)       # [out_features, in_features, seq_len//32]
+
+        # elementwise product using xnor
+        prod = torch.bitwise_xor(stream.unsqueeze(1), Sweight.unsqueeze(0))
+        prod = torch.bitwise_not(prod)  # [batch_size, out_features, in_features, seq_len//32]
+
+        if self.summation:
+            # reshape
+            prod = prod.reshape(batch_size * self.out_features, in_features,
+                                num_ints)  # [batch_size*out_features, in_features, seq_len//32]
+
+            # conduct stackMAJ
+            out = Slayer.stackMAJ(prod, strict=self.strict) # [batch_size*out_features, seq_len//32]
+            out = out.reshape(batch_size, self.out_features, num_ints)  # [batch_size, self.out_features, num_ints]
+
+        else:
+            out = prod
+
+        return out
+
+
+
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
