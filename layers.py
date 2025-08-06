@@ -7,6 +7,46 @@ from itertools import combinations
 from transform import Transform
 
 
+class MAJ3Fn(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        if x.dim() == 1:
+            x = x.unsqueeze(0)       # [1, 3]
+            ctx.squeeze_back = True
+        else:
+            ctx.squeeze_back = False
+
+        xs = (x + 1) * 0.5           # [B,3], a,b,c ∈ [0,1]
+        ctx.save_for_backward(xs)
+
+        a, b, c = xs[:, 0], xs[:, 1], xs[:, 2]
+        r = a * b + a * c + b * c - 2 * a * b * c
+        y = (2 * r - 1).unsqueeze(-1)   # [B,1]
+        return y
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (xs,) = ctx.saved_tensors
+        a, b, c = xs[:, 0], xs[:, 1], xs[:, 2]
+
+        g1 = b + c - 2 * b * c
+        g2 = a + c - 2 * a * c
+        g3 = a + b - 2 * a * b
+        G = torch.stack([g1, g2, g3], dim=1)  # [B,3]
+
+        if grad_output.dim() == 0:
+            grad_output = grad_output.view(1, 1).expand_as(G)
+        elif grad_output.dim() == 1:
+            grad_output = grad_output.view(-1, 1)
+
+        grad_input = G * grad_output  # [B,3]
+
+        if ctx.squeeze_back:
+            grad_input = grad_input.squeeze(0)
+
+        return grad_input
+
+
 class Slayer(ABC):
     def __init__(self, seq_len):
         super().__init__()
@@ -111,93 +151,6 @@ class Slayer(ABC):
         return current.squeeze(1)  # (batch_size, num_ints)
 
     @staticmethod
-    def MAJ_sim(x: torch.Tensor) -> torch.Tensor:
-        '''
-        vectorized MAJ, support batch processing
-        :param x: [batch_size, n]
-        :return: result: [batch_size, 1]
-        '''
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
-
-        batch_size, n = x.shape
-        majority_threshold = (n + 1) // 2
-
-        prob_x = (1 + x) * 0.5
-
-        result = torch.zeros(batch_size, dtype=x.dtype, device=x.device)
-
-        # compute for every possible majority number in [majority_threshold, n]
-        for k in range(majority_threshold, n + 1):
-            # compute for every possible combinations that sums up to k
-            for combo in combinations(range(n), k):
-                combo_mask = torch.zeros(n, dtype=torch.bool, device=x.device)
-                combo_mask[list(combo)] = True
-
-                term = torch.ones(batch_size, dtype=x.dtype, device=x.device)
-
-                # vectorized product
-                term *= torch.prod(torch.where(combo_mask, prob_x, 1 - prob_x), dim=1)
-                result += term
-
-        return (2 * result - 1).unsqueeze(-1)
-
-    @staticmethod
-    def stackMAJ_sim(x: torch.Tensor, maj_dim: int, strict: bool = True) -> torch.Tensor:
-        '''
-        vectorized stackMAJ, support batch processing
-        :param x: [batch_size, n]
-        :param maj_dim: integer, number of inputs of a single MAJ
-        :return: result: [batch_size, 1]
-        '''
-
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
-
-        batch_size = x.size(0)
-
-        while x.size(1) > 1:
-            current_length = x.size(1)
-
-            if strict:
-                assert current_length % maj_dim == 0, "number of stackMAJ inputs must be some power of maj_dim"
-                num_chunks = current_length // maj_dim
-            else:
-                num_chunks = current_length // maj_dim
-                if num_chunks == 0:
-                    x = x[:, :1]
-                    break
-                x = x[:, :num_chunks * maj_dim]
-
-            # reshape to fit the input shape of MAJ
-            x = x.reshape(batch_size, num_chunks, maj_dim)
-            x = x.reshape(batch_size * num_chunks, maj_dim)
-
-            # conduct MAJ
-            maj_results = Slayer.MAJ_sim(x)
-
-            # reshape back
-            x = maj_results.reshape(batch_size, num_chunks)
-
-        return x
-
-    @staticmethod
-    def MAJ3_sim(x: torch.Tensor) -> torch.Tensor:
-        '''
-        vectorized 3-input MAJ, support batch processing
-        :param x: [batch_size, 3]
-        :return: result: [batch_size, 1]
-        '''
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
-
-        x = (x + 1) * 0.5
-        x1, x2, x3 = x[:, 0], x[:, 1], x[:, 2]
-        result = x1*x2*(1-x3) + x1*(1-x2)*x3 + (1-x1)*x2*x3 + x1*x2*x3
-        return (2*result - 1).unsqueeze(-1)
-
-
-    @staticmethod
     def stackMAJ3_sim(x: torch.Tensor, strict: bool = True) -> torch.Tensor:
         '''
         vectorized stackMAJ3, support batch processing
@@ -228,7 +181,7 @@ class Slayer(ABC):
             x = x.reshape(batch_size * num_chunks, 3)
 
             # conduct MAJ
-            maj_results = Slayer.MAJ3_sim(x)
+            maj_results = MAJ3Fn.apply(x)
 
             # reshape back
             x = maj_results.reshape(batch_size, num_chunks)
@@ -283,33 +236,6 @@ class SConv2d(Slayer, nn.Module):
         self.maj_dim = self.kernel_size[0]
         self.strict = strict
 
-    @staticmethod
-    def stackMAJ_conv2d(prod, maj_dim, strict):
-        '''
-        stackMAJ designed for conv2d, support batch processing
-        :param prod: [N,C_out, C_in*kh*kw, L]   (conduct stackMAJ to its 3rd dimension)
-        :param maj_dim: integer, number of inputs of a single MAJ
-        :return: result: [N, C_out, L]
-        '''
-
-        N, out_channels, _, L = prod.size()
-
-        # move the target dimension(3rd) to the last, and reshape to fit the input shape of stackMAJ
-        prod = prod.movedim(2, -1)  # (N, C_out, L, C_in*kh*kw)
-        flat_tensor = prod.reshape(-1, prod.shape[-1])  # (N*C_out*L, C_in*kh*kw)
-
-        # conduct stackMAJ
-        maj_results = SConv2d.stackMAJ_sim(flat_tensor, maj_dim, strict=strict)     # [N*C_out*L, 1]
-
-        # check size of the maj_result (should be [N*C_out*L, 1]), and turn the column vector into a row vector
-        assert maj_results.size(1) == 1, "result of stackMAJ must be a single value"
-        maj_results = maj_results.squeeze(1)        # [N*C_out*L, ]
-
-        # again reshape back to [N, C_out, L]
-        result = maj_results.reshape(N, out_channels, L)
-
-        return result   # [N, C_out, L]
-
 
     def forward(self, x):
         N, C, H, W = x.shape
@@ -335,9 +261,23 @@ class SConv2d(Slayer, nn.Module):
         #      [N, 1, C_in*kh*kw, L]   *       [1, C_out, C_in*kh*kw, 1]
         # a certain element prod[n, m, k, l] means the k-th elementwise product in the l-th sliding-window position in the m-th channel of the n-th sample
 
-        # we shall next conduct stackMAJ to its 3rd dimension and squeeze this dimension
-        out_unfolded = SConv2d.stackMAJ_conv2d(prod, self.maj_dim, strict=self.strict)  # [N, C_out, L]
-        out = out_unfolded.view(N, self.out_channels, H_out, W_out)     # [N, C_out, H_out, W_out]
+
+        N, out_channels, _, L = prod.size()
+
+        # move the target dimension(3rd) to the last, and reshape to fit the input shape of stackMAJ
+        prod = prod.movedim(2, -1)  # (N, C_out, L, C_in*kh*kw)
+        flat_tensor = prod.reshape(-1, prod.shape[-1])  # (N*C_out*L, C_in*kh*kw)
+
+        # conduct stackMAJ
+        maj_results = SConv2d.stackMAJ3_sim(flat_tensor, strict=self.strict)     # [N*C_out*L, 1]
+
+        # squeeze
+        maj_results = maj_results.squeeze(1)        # [N*C_out*L, ]
+
+        # again reshape back to [N, C_out, L]
+        unfolded = maj_results.reshape(N, out_channels, L)
+
+        out = unfolded.view(N, self.out_channels, H_out, W_out)     # [N, C_out, H_out, W_out]
         return out
 
 
@@ -389,6 +329,6 @@ class SConv2d(Slayer, nn.Module):
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
-    x = torch.rand(4, 3, 224, 224)
+    x = torch.rand(3, 3, 224, 224)
     y = l(x)
-    print(y.size())
+    print(y.shape)
