@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
-from itertools import combinations
 
 from transform import Transform
 
@@ -329,6 +328,6 @@ class SConv2d(Slayer, nn.Module):
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, seq_len = 64)
-    x = torch.rand(3, 3, 224, 224)
+    x = torch.rand(32, 3, 224, 224)
     y = l(x)
     print(y.shape)
