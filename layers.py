@@ -54,41 +54,27 @@ class Slayer(ABC):
         self.trans = Transform(seq_len)
 
     @staticmethod
-    def MAJ(x: torch.Tensor) -> torch.Tensor:
+    def MAJ3(x: torch.Tensor) -> torch.Tensor:
         """
-        Majority-gate for an odd number n of packed bit-streams with batch support.
+        Majority gate for 3 packed bit-streams with batch support.
 
         Parameters
         ----------
-        x : torch.Tensor, shape (batch_size, n, seq_len//32)
+        x : torch.Tensor, shape (batch_size, 3, seq_len//32)
             batch_size is any positive integer
-            n is any odd integer; dtype must be the same signed/unsigned int32/64
-            as produced by Transform.f2s.
 
         Returns
         -------
         torch.Tensor, shape (batch_size, seq_len//32), same dtype as x
             Packed majority bit-stream for each batch.
         """
-        # --------------- sanity checks ---------------
-        assert x.dim() == 3, "x must be 3-D (batch_size, n, seq_len//32)"
-        batch_size, n, num_ints = x.shape
-        assert n % 2 == 1, "n must be odd so majority is well-defined"
+        assert x.shape[1] == 3, "Second dimension must be 3"
 
-        # --------------- bitwise majority ---------------
-        shifts = torch.arange(32, device=x.device, dtype=x.dtype)  # [0 … 31]
-        bits = (x.unsqueeze(-1) >> shifts) & 1  # (batch_size, n, num_ints, 32)
-        votes = bits.sum(dim=1)  # (batch_size, num_ints, 32)
-        maj_bit = votes >= (n // 2 + 1)  # bool → majority mask
-
-        # --------------- re-pack to integer ---------------
-        weights = (1 << shifts).to(x.dtype)  # 2**shift
-        packed = (maj_bit.to(x.dtype) * weights).sum(dim=-1)  # (batch_size, num_ints)
-
-        return packed
+        a, b, c = x[:, 0], x[:, 1], x[:, 2]
+        return (a & b) | (a & c) | (b & c)
 
     @staticmethod
-    def stackMAJ(x: torch.Tensor, strict: bool = True) -> torch.Tensor:
+    def stackMAJ3(x: torch.Tensor, strict: bool = True) -> torch.Tensor:
         """
         Stacked majority-gate with batch support using tensorized operations.
         designed especially for 3-input majority gates
@@ -138,7 +124,7 @@ class Slayer(ABC):
             grouped_flat = grouped.view(batch_size * num_groups, 3, num_ints)
 
             # Apply majority_packed_batch to all groups at once
-            maj_results = Slayer.MAJ(grouped_flat)  # (batch_size * num_groups, num_ints)
+            maj_results = Slayer.MAJ3(grouped_flat)  # (batch_size * num_groups, num_ints)
 
             # Reshape back to batch format: (batch_size, num_groups, num_ints)
             current = maj_results.view(batch_size, num_groups, num_ints)
@@ -304,15 +290,15 @@ class SConv2d(Slayer, nn.Module):
         # conduct stackMAJ as summation
         prod = prod.permute(0, 1, 3, 2, 4)  # [N, C_out, L, C_in*kh*kw, num_ints]
         prod = prod.reshape(-1, prod.shape[-2], prod.shape[-1])     # [N*C_out*L, C_in*kh*kw, num_ints]
-        out = Slayer.stackMAJ(prod, strict=self.strict)   # [N*C_out*L, num_ints]
+        out = Slayer.stackMAJ3(prod, strict=self.strict)   # [N*C_out*L, num_ints]
         out = out.view(N, self.out_channels, L, num_ints)               # [N, C_out, L, num_ints]
         out = out.view(N, self.out_channels, H_out, W_out, num_ints)    # [N, C_out, H_out, W_out, num_ints]
         return out
 
 
-class SAvgPool2d(nn.Module):
-    def __init__(self, kernel_size, stride=None, padding=0, strict=True):
-        super().__init__()
+class SAvgPool2d(Slayer, nn.Module):
+    def __init__(self, kernel_size, stride=None, padding=0, seq_len=1024, strict=True):
+        super().__init__(seq_len)
         self.kernel_size = nn.modules.utils._pair(kernel_size)
         self.stride = nn.modules.utils._pair(stride or kernel_size)  # if stride is None, self.stride=kernel_size
         self.padding = nn.modules.utils._pair(padding)
@@ -367,7 +353,7 @@ class SAvgPool2d(nn.Module):
         # reshape and conduct stackMAJ
         unfolded = unfolded.reshape(N, C, kh*kw, L, num_ints).permute(0, 1, 3, 2, 4)    # [N, C_in, L, kh*kw, num_ints]
         unfolded = unfolded.reshape(N*C*L, kh*kw, num_ints) # [N*C_in*L, kh*kw, num_ints]
-        out = Slayer.stackMAJ(unfolded, strict=self.strict) # [N*C_in*L, num_ints]
+        out = Slayer.stackMAJ3(unfolded, strict=self.strict) # [N*C_in*L, num_ints]
 
         # reshape back
         out = out.reshape(N, C, L, num_ints)
@@ -433,7 +419,7 @@ class SLinear(Slayer, nn.Module):
                                 num_ints)  # [batch_size*out_features, in_features, seq_len//32]
 
             # conduct stackMAJ
-            out = Slayer.stackMAJ(prod, strict=self.strict) # [batch_size*out_features, seq_len//32]
+            out = Slayer.stackMAJ3(prod, strict=self.strict) # [batch_size*out_features, seq_len//32]
             out = out.reshape(batch_size, self.out_features, num_ints)  # [batch_size, self.out_features, num_ints]
 
         else:
@@ -442,7 +428,18 @@ class SLinear(Slayer, nn.Module):
         return out
 
 
+class SActv(Slayer, nn.Module):
+    def __init__(self, repeats, seq_len=1024):
+        super().__init__(seq_len)
+        self.repeats = repeats
 
+    def forward(self, x):
+        for _ in range(self.repeats):
+            x = -0.5 * x ** 3 + 1.5 * x
+        return x
+
+    def Sforward(self, stream):
+        pass
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, strict=True)

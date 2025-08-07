@@ -201,3 +201,11 @@ def unfold_5d(stream, kernel_size, stride, padding):
     stream = stream.view(N, C * kh * kw, out_H * out_W, num_ints)  # [N, C*kH*kW, L, num_ints]
 
     return stream
+
+
+def maj3_packed(inputs: torch.Tensor) -> torch.Tensor:
+    assert inputs.shape[1] == 3, "Second dimension must be 3"
+
+    a, b, c = inputs[:, 0], inputs[:, 1], inputs[:, 2]
+    return (a & b) | (a & c) | (b & c)
+
