@@ -223,9 +223,7 @@ class SConv2d(Slayer, nn.Module):
         self.weight = nn.Parameter(torch.empty(weight_shape))
         nn.init.kaiming_uniform_(self.weight)
 
-        self.maj_dim = self.kernel_size[0]
         self.strict = strict
-
 
     def forward(self, x):
         N, C, H, W = x.shape
@@ -282,8 +280,6 @@ class SConv2d(Slayer, nn.Module):
         H_out = (H + 2 * ph - dh * (kh - 1) - 1) // sh + 1
         W_out = (W + 2 * pw - dw * (kw - 1) - 1) // sw + 1
 
-        # unfolded_manual = SConv2d.tensor_unfold_5d(stream, self.kernel_size, self.stride, self.padding)
-
 
         # To apply F.unfold to a 5D tensor, we need to first reshape to 4D and then reshape back to 5D
         # (1) reshape to [N*num_ints, C_in, H, W], and apply F.unfold
@@ -314,6 +310,72 @@ class SConv2d(Slayer, nn.Module):
         return out
 
 
+class SAvgPool2d(nn.Module):
+    def __init__(self, kernel_size, stride=None, padding=0, strict=True):
+        super().__init__()
+        self.kernel_size = nn.modules.utils._pair(kernel_size)
+        self.stride = nn.modules.utils._pair(stride or kernel_size)  # if stride is None, self.stride=kernel_size
+        self.padding = nn.modules.utils._pair(padding)
+
+        self.strict = strict
+
+    def forward(self, x):
+        N, C, H, W = x.shape
+        kh, kw = self.kernel_size
+        sh, sw = self.stride
+        ph, pw = self.padding
+
+        # output size
+        H_out = (H + 2 * ph - kh) // sh + 1
+        W_out = (W + 2 * pw - kw) // sw + 1
+
+        # unfold into patches
+        patches = F.unfold(x, kernel_size=self.kernel_size,
+                           padding=self.padding, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
+
+        # reshape
+        patches = patches.view(N, C, kh * kw, -1)  # [N, C_in, kh*kw, L]
+        patches = patches.permute(0, 1, 3, 2)  # [N, C_in, L, kh*kw]
+        patches = patches.reshape(-1, patches.shape[-1])    # [N*C_in*L, kh*kw]
+
+        # conduct stackMAJ
+        unfolded = Slayer.stackMAJ3_sim(patches, strict=self.strict)    # [N*C_in*L, 1]
+
+        # reshape back
+        out = unfolded.reshape(N, C, H_out, W_out)  # [N, C, H_out, W_out]
+        return out
+
+    def Sforward(self, stream):
+        N, C, H, W, num_ints = stream.shape
+        kh, kw = self.kernel_size
+        sh, sw = self.stride
+        ph, pw = self.padding
+
+        # output size
+        H_out = (H + 2 * ph - kh) // sh + 1
+        W_out = (W + 2 * pw - kw) // sw + 1
+
+        # unfold
+        stream = stream.to(torch.float64)   # F.unfold can only process float tensors
+        stream_reshaped = stream.permute(0, 4, 1, 2, 3).contiguous().view(N * num_ints, C, H, W)
+        unfolded = F.unfold(stream_reshaped, kernel_size=self.kernel_size, stride=self.stride,
+                            padding=self.padding)   # [N*num_ints, C_in*kh*kw, L]
+        _, feature_dim, L = unfolded.shape
+        unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1) # [N, C_in*kh*kw, L, num_ints]
+        unfolded = unfolded.to(torch.int64)  # convert back to int64
+
+        # reshape and conduct stackMAJ
+        unfolded = unfolded.reshape(N, C, kh*kw, L, num_ints).permute(0, 1, 3, 2, 4)    # [N, C_in, L, kh*kw, num_ints]
+        unfolded = unfolded.reshape(N*C*L, kh*kw, num_ints) # [N*C_in*L, kh*kw, num_ints]
+        out = Slayer.stackMAJ(unfolded, strict=self.strict) # [N*C_in*L, num_ints]
+
+        # reshape back
+        out = out.reshape(N, C, L, num_ints)
+        out = out.reshape(N, C, H_out, W_out, num_ints)
+        return out
+
+
+
 class SLinear(Slayer, nn.Module):
     def __init__(self, in_features, out_features, seq_len=1024, strict=True, summation=True):
         super().__init__(seq_len)
@@ -322,6 +384,9 @@ class SLinear(Slayer, nn.Module):
         self.out_features = out_features
         self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+        self.strict = strict
+        self.summation = summation
 
     def forward(self, x):
         '''
@@ -380,9 +445,14 @@ class SLinear(Slayer, nn.Module):
 
 
 if __name__ == '__main__':
-    l = SConv2d(3, 3, 3, 1, seq_len = 64)
-    x = torch.rand(3, 3, 224, 224)
+    l = SConv2d(3, 3, 3, 1, strict=True)
+    x = torch.rand(4, 3, 224, 224)
+    s = l.trans.f2s(x)
     print(l(x).shape)
 
+    # m = SLinear(27, 81, summation=False)
+    # z = torch.rand(16, 27)*2 - 1
+    # print(m(z).shape)
 
-
+    avg = SAvgPool2d(3, stride=2, padding=0)
+    print(avg.Sforward(s).shape)
