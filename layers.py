@@ -431,7 +431,36 @@ class SLinear(Slayer, nn.Module):
 class SActv(Slayer, nn.Module):
     def __init__(self, repeats, seq_len=1024):
         super().__init__(seq_len)
-        self.repeats = repeats
+        self.repeats = repeats      # should be some power of 3
+
+    @staticmethod
+    def right_shift(packed: torch.Tensor) -> torch.Tensor:
+        mask32 = torch.tensor((1 << 32) - 1, dtype=packed.dtype, device=packed.device)
+        unsigned = packed & mask32  # (..., N)
+        half = unsigned >> 1  # (..., N)
+        carry = (torch.roll(unsigned, shifts=1, dims=-1) & 1) << 31  # (..., N)
+        return (half | carry).to(packed.dtype)
+
+    @staticmethod
+    def right_shift_stack(packed, n):
+        '''
+        shift the input bit-stream rightwards by 0, 1, 2, ..., n bit circularly
+        and stack the these results as the penultimate dimension.
+        Note that "rightwards" here means toward the direction of higher bit positions(say, from 2^0 to 2^1)
+        :param packed: bit stream that needs to be shifted and stacked. length of dim -1 must be seq_len//32
+        :param n: times of shifts
+        :return: [... , n, seq_len//32]
+        '''
+        if n <= 0:
+            raise ValueError("n must be > 0")
+
+        outs = [packed]
+        cur = packed
+        for _k in range(1, n):
+            cur = SActv.right_shift(cur)
+            outs.append(cur)
+
+        return torch.stack(outs, dim=-2)
 
     def forward(self, x):
         for _ in range(self.repeats):
@@ -439,11 +468,26 @@ class SActv(Slayer, nn.Module):
         return x
 
     def Sforward(self, stream):
-        pass
+        # shift and stack
+        stack = self.right_shift_stack(stream, self.repeats)  # [..., n, seq_len//32]
+        fronts = stack.shape[:-2]
+        n, num_ints = stack.shape[-2], stack.shape[-1]
+
+        # combine the front dimensions
+        stack = stack.reshape(-1, n, num_ints)  # [X, n, num_ints],
+                                                # where X is the product of the lengths of all other dimensions
+
+        # conduct stackMAJ
+        out = Slayer.stackMAJ3(stack, strict=True)  # [X, num_ints]
+
+        # reshape back
+        out = out.reshape(*fronts, num_ints)    # [..., num_ints]
+        return out
+
 
 if __name__ == '__main__':
     l = SConv2d(3, 3, 3, 1, strict=True)
-    x = torch.rand(4, 3, 224, 224)
+    x = torch.rand(4, 3, 28, 28)
     s = l.trans.f2s(x)
     print(l(x).shape)
 
@@ -453,3 +497,7 @@ if __name__ == '__main__':
 
     avg = SAvgPool2d(3, stride=2, padding=0)
     print(avg.Sforward(s).shape)
+
+    actv = SActv(9)
+    print(actv(x).shape)
+    print(actv.Sforward(s).shape)
