@@ -13,14 +13,17 @@ class SMNIST(layers.Slayer, nn.Module):
         self.fc2 = layers.SLinear(243, 81, seq_len=seq_len)
         self.actv2 = layers.SActv(0, seq_len=seq_len)
         self.fc3 = layers.SLinear(81, 10, seq_len=seq_len)
-
+        self.dropout = nn.Dropout(0.2)
 
     def forward(self, x):
         x = self.flatten(x)
-        x = self.actv1(self.fc1(x))
-        x = self.actv2(self.fc2(x))
+        x = self.dropout(self.actv1(self.fc1(x)))
+        x = self.dropout(self.actv2(self.fc2(x)))
         x = self.fc3(x)
-        return x
+        if self.fc3.summation:
+            return x
+        else:
+            return torch.sum(x, dim=-1)
 
     def Sforward(self, x):
         stream = self.trans.f2s(self.flatten(x))
@@ -32,18 +35,18 @@ class SMNIST(layers.Slayer, nn.Module):
 class MNIST(nn.Module):
     def __init__(self):
         super().__init__()
-        # 98.12%
+        # 98.19%
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(729, 243)
         self.actv1 = nn.Tanh()
         self.fc2 = nn.Linear(243, 81)
         self.actv2 = nn.Tanh()
         self.fc3 = nn.Linear(81, 10)
+        self.dropout = nn.Dropout(0.2)
 
     def forward(self, x):
         x = self.flatten(x)
-        x = self.actv1(self.fc1(x))
-        x = self.actv2(self.fc2(x))
+        x = self.dropout(self.actv1(self.fc1(x)))
+        x = self.dropout(self.actv2(self.fc2(x)))
         x = self.fc3(x)
         return x
-
