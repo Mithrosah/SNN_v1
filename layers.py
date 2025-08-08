@@ -413,17 +413,13 @@ class SLinear(Slayer, nn.Module):
         prod = torch.bitwise_xor(stream.unsqueeze(1), Sweight.unsqueeze(0))
         prod = torch.bitwise_not(prod)  # [batch_size, out_features, in_features, seq_len//32]
 
-        if self.summation:
-            # reshape
-            prod = prod.reshape(batch_size * self.out_features, in_features,
-                                num_ints)  # [batch_size*out_features, in_features, seq_len//32]
+        # reshape
+        prod = prod.reshape(batch_size * self.out_features, in_features,
+                            num_ints)  # [batch_size*out_features, in_features, seq_len//32]
 
-            # conduct stackMAJ
-            out = Slayer.stackMAJ3(prod, strict=self.strict) # [batch_size*out_features, seq_len//32]
-            out = out.reshape(batch_size, self.out_features, num_ints)  # [batch_size, self.out_features, num_ints]
-
-        else:
-            out = prod
+        # conduct stackMAJ
+        out = Slayer.stackMAJ3(prod, strict=self.strict) # [batch_size*out_features, seq_len//32]
+        out = out.reshape(batch_size, self.out_features, num_ints)  # [batch_size, self.out_features, num_ints]
 
         return out
 
