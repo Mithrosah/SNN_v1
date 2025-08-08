@@ -1,3 +1,4 @@
+import torch
 import torchvision
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -6,7 +7,8 @@ from torchvision import transforms
 def mnist_loader(path=r'./dataset'):
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
+        # transforms.Normalize((0.1307,), (0.3081,))
+        transforms.Resize((27, 27)),
         ])
     train_ds = torchvision.datasets.MNIST(root = path,
                                           train = True,
@@ -21,3 +23,9 @@ def mnist_loader(path=r'./dataset'):
     train_dl = DataLoader(train_ds, batch_size = 32, shuffle = True)
     valid_dl = DataLoader(valid_ds, batch_size = 32, shuffle = False)
     return train_dl, valid_dl
+
+if __name__ == '__main__':
+    train_dl, valid_dl = mnist_loader(r'D:\ProgramMe\MLDatasets')
+    x, y = next(iter(train_dl))
+    print(x.shape)
+    print(y.shape)

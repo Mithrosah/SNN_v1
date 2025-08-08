@@ -468,20 +468,23 @@ class SActv(Slayer, nn.Module):
         return x
 
     def Sforward(self, stream):
-        # shift and stack
-        stack = self.right_shift_stack(stream, self.repeats)  # [..., n, seq_len//32]
-        fronts = stack.shape[:-2]
-        n, num_ints = stack.shape[-2], stack.shape[-1]
+        if self.repeats > 0:
+            # shift and stack
+            stack = self.right_shift_stack(stream, self.repeats)  # [..., n, seq_len//32]
+            fronts = stack.shape[:-2]
+            n, num_ints = stack.shape[-2], stack.shape[-1]
 
-        # combine the front dimensions
-        stack = stack.reshape(-1, n, num_ints)  # [X, n, num_ints],
-                                                # where X is the product of the lengths of all other dimensions
+            # combine the front dimensions
+            stack = stack.reshape(-1, n, num_ints)  # [X, n, num_ints],
+                                                    # where X is the product of the lengths of all other dimensions
 
-        # conduct stackMAJ
-        out = Slayer.stackMAJ3(stack, strict=True)  # [X, num_ints]
+            # conduct stackMAJ
+            out = Slayer.stackMAJ3(stack, strict=True)  # [X, num_ints]
 
-        # reshape back
-        out = out.reshape(*fronts, num_ints)    # [..., num_ints]
+            # reshape back
+            out = out.reshape(*fronts, num_ints)    # [..., num_ints]
+        else:
+            out = stream
         return out
 
 
