@@ -105,7 +105,7 @@ class Slayer(ABC):
 
             if strict:
                 # Check if current_n is divisible by maj_dim
-                assert current_n % 3 == 0, "Cannot divide {current_n} streams by 3 evenly"
+                assert current_n % 3 == 0, f"Cannot divide {current_n} streams by 3 evenly"
                 num_groups = current_n // 3
             else:
                 num_groups = current_n // 3
@@ -466,12 +466,12 @@ class SActv(Slayer, nn.Module):
     def Sforward(self, stream):
         if self.repeats > 0:
             # shift and stack
-            stack = self.right_shift_stack(stream, self.repeats)  # [..., n, seq_len//32]
+            stack = self.right_shift_stack(stream, 3**self.repeats)  # [..., 3^n, seq_len//32]
             fronts = stack.shape[:-2]
             n, num_ints = stack.shape[-2], stack.shape[-1]
 
             # combine the front dimensions
-            stack = stack.reshape(-1, n, num_ints)  # [X, n, num_ints],
+            stack = stack.reshape(-1, n, num_ints)  # [X, 3^n, num_ints],
                                                     # where X is the product of the lengths of all other dimensions
 
             # conduct stackMAJ

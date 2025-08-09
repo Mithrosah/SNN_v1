@@ -1,4 +1,6 @@
 import os
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
@@ -6,8 +8,16 @@ from tqdm import tqdm
 
 from model import SMNIST, MNIST
 from data import mnist_loader
-from utils import seed_everything
 
+def seed_everything(seed=42):
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def train(model, train_dl, optimizer, loss_fn, accelerator, epoch):
     model.train()
