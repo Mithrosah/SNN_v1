@@ -48,10 +48,8 @@ class MAJ3Fn(torch.autograd.Function):
 
 
 class Slayer(ABC):
-    def __init__(self, seq_len):
+    def __init__(self):
         super().__init__()
-        self.seq_len = seq_len
-        self.trans = Transform(seq_len)
 
     @staticmethod
     def MAJ3(x: torch.Tensor) -> torch.Tensor:
@@ -171,6 +169,10 @@ class Slayer(ABC):
         return x
 
     @abstractmethod
+    def prepare_Sforward(self, trans):
+        pass
+
+    @abstractmethod
     def Sforward(self, stream):
         pass
 
@@ -186,16 +188,14 @@ class SConv2d(Slayer, nn.Module):
             stride=1,
             padding=0,
             dilation=1,
-            seq_len=1024,
             strict=True):
 
         '''
         comments for additional parameters:
-        :param seq_len: length of bit-streams
         :param strict: whether to check the number of stackMAJ inputs is some power of maj_dim
         '''
 
-        super().__init__(seq_len)
+        super().__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -254,6 +254,8 @@ class SConv2d(Slayer, nn.Module):
         out = unfolded.view(N, self.out_channels, H_out, W_out)     # [N, C_out, H_out, W_out]
         return out
 
+    def prepare_Sforward(self, trans):
+        self.Sweight = trans.f2s(self.weight)   # [C_out, C_in, kh, kw, num_ints]
 
     def Sforward(self, stream):
         N, C, H, W, num_ints = stream.shape     # here, num_ints means seq_len//32
@@ -280,8 +282,7 @@ class SConv2d(Slayer, nn.Module):
         unfolded = unfolded.to(torch.int64)     # convert back to int64
 
         # prepare convolution kernel for stochastic forward propagation
-        Sweight = self.trans.f2s(self.weight)   # [C_out, C_in, kh, kw, num_ints]
-        Sweight = Sweight.view(self.out_channels, -1, num_ints) # [C_out, C_in*kh*kw, num_ints]
+        Sweight = self.Sweight.view(self.out_channels, -1, num_ints) # [C_out, C_in*kh*kw, num_ints]
 
         # elementwise product using XNOR gates
         prod = torch.bitwise_xor(unfolded.unsqueeze(1), Sweight.unsqueeze(0).unsqueeze(-2))
@@ -297,8 +298,8 @@ class SConv2d(Slayer, nn.Module):
 
 
 class SAvgPool2d(Slayer, nn.Module):
-    def __init__(self, kernel_size, stride=None, padding=0, seq_len=1024, strict=True):
-        super().__init__(seq_len)
+    def __init__(self, kernel_size, stride=None, padding=0, strict=True):
+        super().__init__()
         self.kernel_size = nn.modules.utils._pair(kernel_size)
         self.stride = nn.modules.utils._pair(stride or kernel_size)  # if stride is None, self.stride=kernel_size
         self.padding = nn.modules.utils._pair(padding)
@@ -330,6 +331,9 @@ class SAvgPool2d(Slayer, nn.Module):
         # reshape back
         out = unfolded.reshape(N, C, H_out, W_out)  # [N, C, H_out, W_out]
         return out
+
+    def prepare_Sforward(self, trans):
+        pass
 
     def Sforward(self, stream):
         N, C, H, W, num_ints = stream.shape
@@ -363,8 +367,8 @@ class SAvgPool2d(Slayer, nn.Module):
 
 
 class SLinear(Slayer, nn.Module):
-    def __init__(self, in_features, out_features, seq_len=1024, strict=True, summation=True):
-        super().__init__(seq_len)
+    def __init__(self, in_features, out_features, strict=True, summation=True):
+        super().__init__()
 
         self.in_features = in_features
         self.out_features = out_features
@@ -400,6 +404,9 @@ class SLinear(Slayer, nn.Module):
 
         return out
 
+    def prepare_Sforward(self, trans):
+        self.Sweight = trans.f2s(self.weight)  # [out_features, in_features, seq_len//32]
+
     def Sforward(self, stream):
         '''
         :param stream: [batch_size, in_features, seq_len//32]
@@ -407,10 +414,9 @@ class SLinear(Slayer, nn.Module):
         '''
 
         batch_size, in_features, num_ints = stream.shape
-        Sweight = self.trans.f2s(self.weight)       # [out_features, in_features, seq_len//32]
 
         # elementwise product using xnor
-        prod = torch.bitwise_xor(stream.unsqueeze(1), Sweight.unsqueeze(0))
+        prod = torch.bitwise_xor(stream.unsqueeze(1), self.Sweight.unsqueeze(0))
         prod = torch.bitwise_not(prod)  # [batch_size, out_features, in_features, seq_len//32]
 
         # reshape
@@ -425,8 +431,8 @@ class SLinear(Slayer, nn.Module):
 
 
 class SActv(Slayer, nn.Module):
-    def __init__(self, repeats, seq_len=1024):
-        super().__init__(seq_len)
+    def __init__(self, repeats):
+        super().__init__()
         self.repeats = repeats      # should be some power of 3
 
     @staticmethod
@@ -463,6 +469,9 @@ class SActv(Slayer, nn.Module):
             x = -0.5 * x ** 3 + 1.5 * x
         return x
 
+    def prepare_Sforward(self, trans):
+        pass
+
     def Sforward(self, stream):
         if self.repeats > 0:
             # shift and stack
@@ -485,18 +494,25 @@ class SActv(Slayer, nn.Module):
 
 
 if __name__ == '__main__':
+    trans = Transform(512)
+
     l = SConv2d(3, 3, 3, 1, strict=True)
     x = torch.rand(4, 3, 28, 28)
-    s = l.trans.f2s(x)
-    print(l(x).shape)
+    s = trans.f2s(x)
 
-    # m = SLinear(27, 81, summation=False)
-    # z = torch.rand(16, 27)*2 - 1
-    # print(m(z).shape)
+    print(l(x).shape)
+    l.prepare_Sforward(trans)
+    print(l.Sforward(s).shape)
+
+    m = SLinear(27, 81, summation=False)
+    z = torch.rand(16, 27)*2 - 1
+    print(m(z).shape)
 
     avg = SAvgPool2d(3, stride=2, padding=0)
+    avg.prepare_Sforward(trans)
     print(avg.Sforward(s).shape)
 
-    actv = SActv(9)
+    actv = SActv(1)
     print(actv(x).shape)
+    actv.prepare_Sforward(trans)
     print(actv.Sforward(s).shape)
