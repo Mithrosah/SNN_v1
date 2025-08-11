@@ -436,33 +436,47 @@ class SActv(Slayer, nn.Module):
         self.repeats = repeats      # should be some power of 3
 
     @staticmethod
-    def right_shift(packed: torch.Tensor) -> torch.Tensor:
-        mask32 = torch.tensor((1 << 32) - 1, dtype=packed.dtype, device=packed.device)
-        unsigned = packed & mask32  # (..., N)
-        half = unsigned >> 1  # (..., N)
-        carry = (torch.roll(unsigned, shifts=1, dims=-1) & 1) << 31  # (..., N)
-        return (half | carry).to(packed.dtype)
-
-    @staticmethod
-    def right_shift_stack(packed, n):
+    def right_shift_stack(packed: torch.Tensor, n: int, chunk_size: int = 16) -> torch.Tensor:
         '''
-        shift the input bit-stream rightwards by 0, 1, 2, ..., n bit circularly
-        and stack the these results as the penultimate dimension.
-        Note that "rightwards" here means toward the direction of higher bit positions(say, from 2^0 to 2^1)
-        :param packed: bit stream that needs to be shifted and stacked. length of dim -1 must be seq_len//32
-        :param n: times of shifts
-        :return: [... , n, seq_len//32]
+        theoretically, bigger chunk_size costs more GPU memory and is of course faster
+        but not as measurable as expected.
         '''
         if n <= 0:
-            raise ValueError("n must be > 0")
+            raise ValueError("n 必须大于 0")
 
-        outs = [packed]
-        cur = packed
-        for _k in range(1, n):
-            cur = SActv.right_shift(cur)
-            outs.append(cur)
+        original_shape = packed.shape
+        num_ints = original_shape[-1]
+        batch_dims = original_shape[:-1]
+        seq_len = num_ints * 32
 
-        return torch.stack(outs, dim=-2)
+        unpack_shifts = torch.arange(31, -1, -1, device=packed.device, dtype=packed.dtype)
+        bits = (packed.unsqueeze(-1) >> unpack_shifts) & 1
+        bits = bits.view(*batch_dims, seq_len)
+
+        base_indices = torch.arange(seq_len, device=packed.device)
+        pack_weights = (1 << torch.arange(31, -1, -1, device=packed.device)).to(packed.dtype)
+
+        output_chunks = []
+
+        for i in range(0, n, chunk_size):
+            start_shift = i
+            end_shift = min(i + chunk_size, n)
+            current_chunk_size = end_shift - start_shift
+
+            shift_amounts = torch.arange(start_shift, end_shift, device=packed.device).unsqueeze(-1)
+
+            rolled_indices = (base_indices - shift_amounts) % seq_len
+            view_shape = (1,) * len(batch_dims) + (current_chunk_size, seq_len)
+            expanded_indices = rolled_indices.view(view_shape).expand(*batch_dims, current_chunk_size, seq_len)
+            source_for_gather = bits.unsqueeze(-2).expand_as(expanded_indices)
+            shifted_bits_chunk = source_for_gather.gather(dim=-1, index=expanded_indices)
+
+            reshaped_bits_chunk = shifted_bits_chunk.view(*batch_dims, current_chunk_size, num_ints, 32)
+            packed_again_chunk = (reshaped_bits_chunk.long() * pack_weights).sum(dim=-1)
+
+            output_chunks.append(packed_again_chunk.to(packed.dtype))
+
+        return torch.cat(output_chunks, dim=-2)
 
     def forward(self, x):
         for _ in range(self.repeats):
