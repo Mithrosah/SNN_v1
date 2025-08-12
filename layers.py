@@ -6,9 +6,7 @@ import math
 
 from transform import Transform
 
-# this is a comment
-# another
-# another
+
 class MAJ3Fn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
@@ -190,7 +188,8 @@ class SConv2d(Slayer, nn.Module):
             stride=1,
             padding=0,
             dilation=1,
-            strict=True):
+            strict=True,
+            polarize=False):
 
         '''
         comments for additional parameters:
@@ -212,6 +211,16 @@ class SConv2d(Slayer, nn.Module):
         nn.init.kaiming_uniform_(self.weight)
 
         self.strict = strict
+        self.polarize = polarize
+        if polarize:
+            self.kk = nn.Parameter(torch.ones(1), requires_grad=False)
+
+    def set_kk(self, kknew):
+        if self.polarize:
+            with torch.no_grad():
+                self.kk.data = torch.tensor([kknew]).to(self.kk.device)
+        else:
+            raise AttributeError('set_kk() can only be called when polarize is set to True')
 
     def forward(self, x):
         N, C, H, W = x.shape
@@ -229,7 +238,13 @@ class SConv2d(Slayer, nn.Module):
         # the "C_in*kh*kw" is number of pixels of a certain [C_in, kh, kw] region of input tensor
         patches = F.unfold(x, kernel_size=self.kernel_size,
                            padding=self.padding, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
-        weight_flat = self.weight.view(self.out_channels, -1)  # [C_out, C_in*kh*kw]
+
+        if self.polarize:
+            weight = torch.tanh(self.weight * self.kk)
+        else:
+            weight = self.weight
+
+        weight_flat = weight.view(self.out_channels, -1)  # [C_out, C_in*kh*kw]
 
         # Here the purpose is to replace the usual summation with stackMAJ in 2D convolution,
         # so it's not appropriate to directly muptiply the two tensors. Instead, we do elementwise product first:
@@ -369,7 +384,7 @@ class SAvgPool2d(Slayer, nn.Module):
 
 
 class SLinear(Slayer, nn.Module):
-    def __init__(self, in_features, out_features, strict=True, summation=True):
+    def __init__(self, in_features, out_features, strict=True, summation=True, polarize=False):
         super().__init__()
 
         self.in_features = in_features
@@ -379,6 +394,16 @@ class SLinear(Slayer, nn.Module):
 
         self.strict = strict
         self.summation = summation
+        self.polarize = polarize
+        if polarize:
+            self.kk = nn.Parameter(torch.ones(1), requires_grad=False)
+
+    def set_kk(self, kknew):
+        if self.polarize:
+            with torch.no_grad():
+                self.kk.data = torch.tensor([kknew]).to(self.kk.device)
+        else:
+            raise AttributeError('set_kk() can only be called when polarize is set to True')
 
     def forward(self, x):
         '''
@@ -386,8 +411,13 @@ class SLinear(Slayer, nn.Module):
         :return: out: [batch_size, out_features] if summation else [batch_size, out_features, in_features]
         '''
 
+        if self.polarize:
+            weight = torch.tanh(self.weight * self.kk)
+        else:
+            weight = self.weight
+
         # elementwise product
-        prod = x.unsqueeze(1) * self.weight.unsqueeze(0)  # [batch_size, out_features, in_features]
+        prod = x.unsqueeze(1) * weight.unsqueeze(0)  # [batch_size, out_features, in_features]
 
         if self.summation:
 
