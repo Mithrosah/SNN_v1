@@ -7,6 +7,7 @@ import math
 from transform import Transform
 
 # this is a comment
+# another
 class MAJ3Fn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
