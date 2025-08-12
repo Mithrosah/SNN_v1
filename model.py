@@ -24,6 +24,12 @@ class SMNIST(layers.Slayer, nn.Module):
         self.fc2.set_kk(kknew)
         self.fc3.set_kk(kknew)
 
+    def get_kk(self):
+        if self.polarize:
+            return self.fc1.kk.item()
+        else:
+            raise AttributeError('get_kk() can only be called when polarize is set to True')
+
     def forward(self, x):
         x = self.flatten(x)
         x = self.dropout(self.actv1(self.fc1(x)))
