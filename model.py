@@ -26,6 +26,7 @@ class SMNIST(layers.Slayer, nn.Module):
 
     def get_kk(self):
         if self.polarize:
+            assert self.fc1.kk.item() == self.fc2.kk.item() == self.fc3.kk.item(), 'kk of fc1,2,3 mismatch'
             return self.fc1.kk.item()
         else:
             raise AttributeError('get_kk() can only be called when polarize is set to True')
