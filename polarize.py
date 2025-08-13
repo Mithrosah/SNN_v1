@@ -4,7 +4,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 import argparse
 
-from model import SMNIST, MNIST
+from model import SMNIST
 from data import mnist_loader
 from train import seed_everything, train, evaluate
 
