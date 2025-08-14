@@ -5,18 +5,19 @@ from tqdm import tqdm
 
 from model import SMNIST
 from data import mnist_loader
-from train import seed_everything
+from utils import seed_everything, load_checkpoint
 
 
 def Sevaluate(checkpoint_path, valid_dl, seq_len, accelerator):
-    model = SMNIST(seq_len)
-    model.load_state_dict(torch.load(checkpoint_path), strict=True)
+    model = SMNIST(polarize=False, seq_len=seq_len)
+
+    load_checkpoint(checkpoint_path, model, 'p2np')
 
     model, valid_dl = accelerator.prepare(model, valid_dl)
 
-    with torch.no_grad():
-        for param in model.parameters():
-            param.clamp_(-1, 1)
+    # with torch.no_grad():
+    #     for param in model.parameters():
+    #         param.clamp_(-1, 1)
 
     model.module.prepare_Sforward(model.module.trans)
 
@@ -44,8 +45,9 @@ def Sevaluate(checkpoint_path, valid_dl, seq_len, accelerator):
 
 
 def evaluate(checkpoint_path, valid_dl, seq_len, loss_fn, accelerator):
-    model = SMNIST(seq_len)
-    model.load_state_dict(torch.load(checkpoint_path), strict=True)
+    model = SMNIST(polarize=False, seq_len=seq_len)
+
+    load_checkpoint(checkpoint_path, model, 'np2np')
 
     model, valid_dl = accelerator.prepare(model, valid_dl)
 
@@ -82,12 +84,15 @@ def evaluate(checkpoint_path, valid_dl, seq_len, loss_fn, accelerator):
 
 if __name__ == '__main__':
     seed_everything(42)
-    _, valid_dl = mnist_loader(batch_size=4)
+    _, valid_dl = mnist_loader(batch_size=32)
     accelerator = Accelerator()
-    Sevaluate('./checkpoint/best_model.pth', valid_dl, 1024, accelerator)
 
-    # loss_fn = nn.CrossEntropyLoss()
-    # evaluate('./checkpoint/best_model.pth', valid_dl, 1024, loss_fn, accelerator)
+    # Sevaluate('./checkpoint/best_model.pth', valid_dl, 1024, accelerator)
+
+    loss_fn = nn.CrossEntropyLoss()
+    evaluate('./checkpoint/best_model.pth', valid_dl, 1024, loss_fn, accelerator)
 
     # run:
-    # accelerate launch --num_processes=2 test2.py
+    # accelerate launch --num_processes=2 test.py
+
+
