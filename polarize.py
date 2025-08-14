@@ -19,11 +19,11 @@ class Polarize():
 
     @staticmethod
     def mean_abs(model):
-        assert model.polarize, "model.polarize must be set to True for mean_abs info"
         abs_means = []
         for p in model.parameters():
             if p.requires_grad:
-                p = torch.tanh(model.module.get_kk() * p)
+                if model.module.polarize:
+                    p = torch.tanh(model.module.get_kk() * p)
                 abs_means.append(p.abs().mean())
         return torch.stack(abs_means).mean()
 
