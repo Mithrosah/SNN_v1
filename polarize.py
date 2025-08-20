@@ -61,7 +61,7 @@ class Polarize():
         state_dict = accelerator.get_state_dict(self.model)
         torch.save(state_dict, f'checkpoint/polarize/pretrain.pth')
 
-    def polarize(self, r = 1.5, subepochs = 15, threshold=100):
+    def polarize(self, r, subepochs, threshold):
         self.accelerator.print(f"Polarization stage, starting to push kk at ratio {r:.2f}\n")
 
         while True:
