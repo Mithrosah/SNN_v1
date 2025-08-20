@@ -71,7 +71,7 @@ class Polarize():
             for epoch in range(subepochs):
                 train_loss, train_acc = train(self.model, self.train_dl, self.optimizer, self.loss_fn, self.accelerator, self.epoch_counts)
                 valid_loss, valid_acc = evaluate(self.model, self.valid_dl, self.loss_fn, self.accelerator, self.epoch_counts)
-                _, valid_acc2 = self.evaluate_wihout_activation(epoch)
+                valid_acc2 = self.evaluate_wihout_activation(epoch)
                 mean_abs = self.mean_abs(self.model)
                 self.accelerator.print(
                     f'epoch {epoch + 1:03d}, train_loss: {train_loss:.4f}, valid_loss: {valid_loss:.4f}, '
