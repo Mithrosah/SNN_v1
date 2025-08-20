@@ -51,7 +51,7 @@ class Polarize():
         for epoch in range(epochs):
             train_loss, train_acc = train(self.model, self.train_dl, optimizer, self.loss_fn, self.accelerator, epoch)
             valid_loss, valid_acc = evaluate(self.model, self.valid_dl, self.loss_fn, self.accelerator, epoch)
-            _, valid_acc2 = self.evaluate_wihout_activation(epoch)
+            valid_acc2 = self.evaluate_wihout_activation(epoch)
             scheduler.step()
             mean_abs = Polarize.mean_abs(self.model)
             self.epoch_counts += 1
