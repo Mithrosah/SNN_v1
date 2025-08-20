@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from model import SMNIST, MNIST
 from data import mnist_loader
-from utils import seed_everything
+from utils import seed_everything, CustomScheduler
 
 
 def train(model, train_dl, optimizer, loss_fn, accelerator, epoch):
@@ -69,11 +69,13 @@ def evaluate(model, valid_dl, loss_fn, accelerator, epoch):
 
 def main(model, train_dl, valid_dl, optimizer, loss_fn, accelerator, num_epochs):
     model, optimizer, train_dl, valid_dl = accelerator.prepare(model, optimizer, train_dl, valid_dl)
+    scheduler = CustomScheduler(optimizer)
 
     highest = 0.0
     for epoch in range(num_epochs):
         train_loss, train_acc = train(model, train_dl, optimizer, loss_fn, accelerator, epoch)
         valid_loss, valid_acc = evaluate(model, valid_dl, loss_fn, accelerator, epoch)
+        scheduler.step()
 
         accelerator.print(
             f'Epoch {epoch + 1}, train_loss: {train_loss:.4f}, valid_loss: {valid_loss:.4f}, '
@@ -95,7 +97,7 @@ if __name__ == '__main__':
     loss_fn = nn.CrossEntropyLoss()
 
     os.makedirs('./checkpoint', exist_ok=True)
-    main(model, train_dl, valid_dl, optimizer, loss_fn, accelerator, num_epochs=40)
+    main(model, train_dl, valid_dl, optimizer, loss_fn, accelerator, num_epochs=60)
     # run:
     # accelerate launch --num_processes=2 train.py
 

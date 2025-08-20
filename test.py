@@ -12,12 +12,10 @@ def Sevaluate(checkpoint_path, valid_dl, seq_len, accelerator):
     model = SMNIST(polarize=False, seq_len=seq_len)
 
     load_checkpoint(checkpoint_path, model, 'p2np')
+    model.actv1.repeats = 0
+    model.actv2.repeats = 0
 
     model, valid_dl = accelerator.prepare(model, valid_dl)
-
-    # with torch.no_grad():
-    #     for param in model.parameters():
-    #         param.clamp_(-1, 1)
 
     model.module.prepare_Sforward(model.module.trans)
 
@@ -48,12 +46,11 @@ def evaluate(checkpoint_path, valid_dl, seq_len, loss_fn, accelerator):
     model = SMNIST(polarize=False, seq_len=seq_len)
 
     load_checkpoint(checkpoint_path, model, 'np2np')
+    model.actv1.repeats = 0
+    model.actv2.repeats = 0
+    model.fc3.summation = True
 
     model, valid_dl = accelerator.prepare(model, valid_dl)
-
-    # with torch.no_grad():
-    #     for param in model.parameters():
-    #         param.clamp_(-1, 1)
 
     model.eval()
     total_correct = torch.tensor(0.0, device=accelerator.device)
