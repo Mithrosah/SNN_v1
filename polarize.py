@@ -96,7 +96,7 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = nn.CrossEntropyLoss()
     polarizer = Polarize(model, accelerator, train_dl, valid_dl, optimizer, loss_fn,
-                         pretrain_checkpoint='checkpoint/polarize/pretrained')
+                         pretrain_checkpoint='checkpoint/polarize/pretrained.pth')
     polarizer.main()
 
 
