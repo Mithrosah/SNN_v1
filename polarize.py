@@ -78,7 +78,7 @@ class Polarize():
                     f'train_acc: {train_acc:.4f}, valid_acc: {valid_acc:.4f}/{valid_acc2:.4f}, mean_abs: {mean_abs:.4f}')
                 self.epoch_counts += 1
             if self.model.module.get_kk() >= threshold:
-                print("\nPolarization complete")
+                self.accelerator.print("\nPolarization complete")
                 state_dict = accelerator.get_state_dict(self.model)
                 torch.save(state_dict, f'checkpoint/polarize/polarized.pth')
                 break
