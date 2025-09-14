@@ -59,11 +59,12 @@ def load_checkpoint(path, model, mode):
 
 class CustomScheduler(_LRScheduler):
     def __init__(self, optimizer, warmup_epochs=30, decay_epochs=30,
-                 initial_lr=1e-2, final_lr=1e-3, last_epoch=-1):
+                 initial_lr=1e-2, final_lr=1e-3, decay='linear', last_epoch=-1):
         self.warmup_epochs = warmup_epochs
         self.decay_epochs = decay_epochs
         self.initial_lr = initial_lr
         self.final_lr = final_lr
+        self.decay = decay
         self.total_epochs = warmup_epochs + decay_epochs
         super(CustomScheduler, self).__init__(optimizer, last_epoch)
 
@@ -72,7 +73,12 @@ class CustomScheduler(_LRScheduler):
             return [self.initial_lr for _ in self.base_lrs]
         elif self.last_epoch < self.total_epochs:
             decay_ratio = (self.last_epoch - self.warmup_epochs) / self.decay_epochs
-            current_lr = self.initial_lr - (self.initial_lr - self.final_lr) * decay_ratio
+            if self.decay == 'linear':
+                current_lr = self.initial_lr - (self.initial_lr - self.final_lr) * decay_ratio
+            elif self.decay == 'exponential':
+                current_lr = self.initial_lr * (self.final_lr / self.initial_lr) ** decay_ratio
+            else:
+                raise ValueError("Decay mode must be either 'linear' or 'exponential'")
             return [current_lr for _ in self.base_lrs]
         else:
             return [self.final_lr for _ in self.base_lrs]
