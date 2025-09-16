@@ -474,7 +474,7 @@ class SActv(Slayer, nn.Module):
         but not as measurable as expected.
         '''
         if n <= 0:
-            raise ValueError("n 必须大于 0")
+            raise ValueError("n must be greater than 0")
 
         original_shape = packed.shape
         num_ints = original_shape[-1]
