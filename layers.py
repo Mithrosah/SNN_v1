@@ -236,8 +236,10 @@ class SConv2d(Slayer, nn.Module):
         # unfold the input tensor using F.unfold, getting tensor [N, C_in*kh*kw, L]
         # the "L" is the number of all possible sliding-window positions
         # the "C_in*kh*kw" is number of pixels of a certain [C_in, kh, kw] region of input tensor
-        patches = F.unfold(x, kernel_size=self.kernel_size,
-                           padding=self.padding, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
+        # note that here we split padding and unfolding apart in order to customize padding value
+        padded = F.pad(x, pad=(pw, pw, ph, ph), mode='constant', value=-1)
+        patches = F.unfold(padded, kernel_size=self.kernel_size,
+                           padding=0, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
 
         if self.polarize:
             weight = torch.tanh(self.weight * self.kk)
@@ -287,11 +289,13 @@ class SConv2d(Slayer, nn.Module):
 
 
         # To apply F.unfold to a 5D tensor, we need to first reshape to 4D and then reshape back to 5D
-        # (1) reshape to [N*num_ints, C_in, H, W], and apply F.unfold
+        # (1) reshape to [N*num_ints, C_in, H, W], and apply F.pad & F.unfold
         stream = stream.to(torch.float64)   # F.unfold can only process float tensors
         stream_reshaped = stream.permute(0, 4, 1, 2, 3).contiguous().view(N * num_ints, C, H, W)
-        unfolded = F.unfold(stream_reshaped, kernel_size=self.kernel_size, stride=self.stride,
-                            padding=self.padding, dilation=self.dilation)   # [N*num_ints, C_in*kh*kw, L]
+        stream_padded = F.pad(stream_reshaped, pad=(pw, pw, ph, ph), value=0)
+        unfolded = F.unfold(stream_padded, kernel_size=self.kernel_size, stride=self.stride,
+                            padding=0, dilation=self.dilation)   # [N*num_ints, C_in*kh*kw, L]
+
         # (2) reshape back
         _, feature_dim, L = unfolded.shape
         unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1) # [N, C_in*kh*kw, L, num_ints]
@@ -334,8 +338,9 @@ class SAvgPool2d(Slayer, nn.Module):
         W_out = (W + 2 * pw - kw) // sw + 1
 
         # unfold into patches
-        patches = F.unfold(x, kernel_size=self.kernel_size,
-                           padding=self.padding, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
+        padded = F.pad(x, pad=(pw, pw, ph, ph), mode='constant', value=-1)
+        patches = F.unfold(padded, kernel_size=self.kernel_size,
+                           padding=0, stride=self.stride)  # [N, C_in*kh*kw, L], where L = H_out * W_out
 
         # reshape
         patches = patches.view(N, C, kh * kw, -1)  # [N, C_in, kh*kw, L]
@@ -365,8 +370,9 @@ class SAvgPool2d(Slayer, nn.Module):
         # unfold
         stream = stream.to(torch.float64)   # F.unfold can only process float tensors
         stream_reshaped = stream.permute(0, 4, 1, 2, 3).contiguous().view(N * num_ints, C, H, W)
-        unfolded = F.unfold(stream_reshaped, kernel_size=self.kernel_size, stride=self.stride,
-                            padding=self.padding)   # [N*num_ints, C_in*kh*kw, L]
+        stream_padded = F.pad(stream_reshaped, (pw, pw, ph, ph), mode='constant', value=0)
+        unfolded = F.unfold(stream_padded, kernel_size=self.kernel_size, stride=self.stride,
+                            padding=0)   # [N*num_ints, C_in*kh*kw, L]
         _, feature_dim, L = unfolded.shape
         unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1) # [N, C_in*kh*kw, L, num_ints]
         unfolded = unfolded.to(torch.int64)  # convert back to int64
