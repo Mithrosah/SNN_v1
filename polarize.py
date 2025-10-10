@@ -24,8 +24,8 @@ class Polarize():
         self.actv2 = self.model.module.actv2.repeats
 
     @staticmethod
-    def mean_abs(model):
-        return torch.mean(torch.cat([p.abs().view(-1) for p in model.parameters() if p.requires_grad]))
+    def get_mean_abs(model):
+        return torch.mean(torch.cat([torch.tanh(p*model.module.get_kk()).abs().view(-1) for p in model.parameters() if p.requires_grad]))
         # abs_means = []
         # for p in model.parameters():
         #     if p.requires_grad:
@@ -54,7 +54,7 @@ class Polarize():
             valid_loss, valid_acc = evaluate(self.model, self.valid_dl, self.loss_fn, self.accelerator, epoch)
             valid_acc2 = self.evaluate_wihout_activation(epoch)
             scheduler.step()
-            mean_abs = Polarize.mean_abs(self.model)
+            mean_abs = Polarize.get_mean_abs(self.model)
             self.epoch_counts += 1
             self.accelerator.print(f'epoch {epoch+1:03d}, train_loss: {train_loss:.4f}, valid_loss: {valid_loss:.4f}, '
                                    f'train_acc: {train_acc:.4f}, valid_acc: {valid_acc:.4f}/{valid_acc2:.4f}, mean_abs: {mean_abs:.4f}')
@@ -73,7 +73,7 @@ class Polarize():
                 train_loss, train_acc = train(self.model, self.train_dl, self.optimizer, self.loss_fn, self.accelerator, self.epoch_counts)
                 valid_loss, valid_acc = evaluate(self.model, self.valid_dl, self.loss_fn, self.accelerator, self.epoch_counts)
                 valid_acc2 = self.evaluate_wihout_activation(self.epoch_counts)
-                mean_abs = self.mean_abs(self.model)
+                mean_abs = self.get_mean_abs(self.model)
                 self.accelerator.print(
                     f'epoch {epoch + 1:03d}, train_loss: {train_loss:.4f}, valid_loss: {valid_loss:.4f}, '
                     f'train_acc: {train_acc:.4f}, valid_acc: {valid_acc:.4f}/{valid_acc2:.4f}, mean_abs: {mean_abs:.4f}')
