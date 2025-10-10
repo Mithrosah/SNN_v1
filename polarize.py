@@ -25,7 +25,21 @@ class Polarize():
 
     @staticmethod
     def get_mean_abs(model):
-        return torch.mean(torch.cat([torch.tanh(p*model.module.get_kk()).abs().view(-1) for p in model.parameters() if p.requires_grad]))
+        if hasattr(model, 'module'):
+            if model.module.polarize:
+                return torch.mean(torch.cat(
+                    [torch.tanh(p * model.module.get_kk()).abs().view(-1) for p in model.parameters() if
+                     p.requires_grad]))
+            else:
+                return torch.mean(
+                    torch.cat([torch.tanh(p).abs().view(-1) for p in model.parameters() if p.requires_grad]))
+        else:
+            if model.polarize:
+                return torch.mean(torch.cat(
+                    [torch.tanh(p * model.get_kk()).abs().view(-1) for p in model.parameters() if p.requires_grad]))
+            else:
+                return torch.mean(
+                    torch.cat([torch.tanh(p).abs().view(-1) for p in model.parameters() if p.requires_grad]))
         # abs_means = []
         # for p in model.parameters():
         #     if p.requires_grad:
