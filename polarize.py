@@ -25,13 +25,14 @@ class Polarize():
 
     @staticmethod
     def mean_abs(model):
-        abs_means = []
-        for p in model.parameters():
-            if p.requires_grad:
-                if model.module.polarize:
-                    p = torch.tanh(model.module.get_kk() * p)
-                abs_means.append(p.abs().mean())
-        return torch.stack(abs_means).mean()
+        return torch.mean(torch.cat([p.abs().view(-1) for p in model.parameters() if p.requires_grad]))
+        # abs_means = []
+        # for p in model.parameters():
+        #     if p.requires_grad:
+        #         if model.module.polarize:
+        #             p = torch.tanh(model.module.get_kk() * p)
+        #         abs_means.append(p.abs().mean())
+        # return torch.stack(abs_means).mean()
 
     def evaluate_wihout_activation(self, epoch):
         with torch.no_grad():
