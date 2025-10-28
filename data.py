@@ -25,7 +25,7 @@ def mnist_loader(path=r'./dataset', batch_size=32):
     return train_dl, valid_dl
 
 if __name__ == '__main__':
-    train_dl, valid_dl = mnist_loader(r'D:\ProgramMe\MLDatasets')
+    train_dl, valid_dl = mnist_loader(path=r'D:\ProgramMe\MLDatasets', batch_size=32)
     x, y = next(iter(train_dl))
     print(x.shape)
     print(y.shape)
