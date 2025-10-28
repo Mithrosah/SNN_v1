@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import layers
 from transform import Transform
@@ -53,6 +54,103 @@ class SMNIST(layers.Slayer, nn.Module):
         stream = self.fc3.Sforward(stream)
         out = self.trans.s2f(stream)
         return out
+
+
+class SMNIST_CNN(layers.Slayer, nn.Module):
+    def __init__(self, polarize=False, seq_len=1024):
+        super().__init__()
+        self.polarize = polarize
+        self.trans = Transform(seq_len)
+
+        self.conv1 = layers.SConv2d(in_channels=1, out_channels=9, kernel_size=3, stride=1, padding=1,
+                                    polarize=polarize)
+        self.pool1 = layers.SAvgPool2d(kernel_size=3, stride=2, padding=1)
+        self.conv2 = layers.SConv2d(in_channels=9, out_channels=27, kernel_size=3, stride=1, padding=1,
+                                    polarize=polarize)
+        self.pool2 = layers.SAvgPool2d(kernel_size=3, stride=2, padding=1)
+        self.conv3 = layers.SConv2d(in_channels=27, out_channels=81, kernel_size=3, stride=1, padding=1,
+                                    polarize=polarize)
+        self.pool3 = layers.SAvgPool2d(kernel_size=3, stride=2, padding=1)
+        self.conv4 = layers.SConv2d(in_channels=81, out_channels=243, kernel_size=3, stride=2, padding=1,
+                                    polarize=polarize)
+        self.pool4 = layers.SAvgPool2d(kernel_size=3, stride=2, padding=1)
+        self.fc = layers.SLinear(243, 10, polarize=polarize)
+
+    def set_kk(self, kknew):
+        self.conv1.set_kk(kknew)
+        self.conv2.set_kk(kknew)
+        self.conv3.set_kk(kknew)
+        self.conv4.set_kk(kknew)
+        self.fc.set_kk(kknew)
+
+    def get_kk(self):
+        if self.polarize:
+            return self.conv1.kk.item()
+        else:
+            raise AttributeError('get_kk() can only be called when polarize is set to True')
+
+    def forward(self, x):
+        # x = torch.sgn(x)
+        x = torch.tanh(x)
+        x = self.pool1(F.dropout2d(self.conv1(x), p=0.0, training=self.training))
+        x = self.pool2(F.dropout2d(self.conv2(x), p=0.0, training=self.training))
+        x = self.pool3(F.dropout2d(self.conv3(x), p=0.0, training=self.training))
+        x = self.pool4(F.dropout2d(self.conv4(x), p=0.0, training=self.training))
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+
+    def shift(self, stream):
+        N, C, H, W, num_ints = stream.shape
+        stream = stream.reshape(N, -1, num_ints)
+        shifted = self.trans.circular_shift(stream)
+        shifted = shifted.reshape(N, C, H, W, num_ints)
+        return shifted
+
+    def prepare_Sforward(self, trans):
+        # must be called before Sforward is called. once will do.
+        for layer in [self.conv1, self.conv2, self.conv3, self.conv4, self.fc]:
+            layer.prepare_Sforward(trans)
+
+    def Sforward(self, x):
+        # x = torch.sgn(x)
+        x = torch.tanh(x)
+
+        # stream = self.trans.f2s(x)
+        # stream = self.pool1.Sforward(self.conv1.Sforward(stream))
+        # stream = self.pool2.Sforward(self.conv2.Sforward(stream))
+        # stream = self.pool3.Sforward(self.conv3.Sforward(stream))
+        # stream = self.pool4.Sforward(self.conv4.Sforward(stream))
+        # stream = stream.squeeze(2).squeeze(2).to(torch.int64)
+        # stream = self.fc.Sforward(stream)
+        # out = self.trans.s2f(stream)
+
+        stream = self.trans.f2s(x)
+        stream = self.conv1.Sforward(stream)
+        stream = self.shift(stream)
+        stream = self.pool1.Sforward(stream)
+        stream = self.shift(stream)
+
+        stream = self.conv2.Sforward(stream)
+        stream = self.shift(stream)
+        stream = self.pool2.Sforward(stream)
+        stream = self.shift(stream)
+
+        stream = self.conv3.Sforward(stream)
+        stream = self.shift(stream)
+        stream = self.pool3.Sforward(stream)
+        stream = self.shift(stream)
+
+        stream = self.conv4.Sforward(stream)
+        stream = self.shift(stream)
+        stream = self.pool4.Sforward(stream)
+        stream = self.shift(stream)
+
+        stream = stream.squeeze(2).squeeze(2).to(torch.int64)
+        stream = self.fc.Sforward(stream)
+        out = self.trans.s2f(stream)
+        return out
+
 
 class MNIST(nn.Module):
     def __init__(self):

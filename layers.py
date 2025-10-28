@@ -6,22 +6,30 @@ import math
 
 from transform import Transform
 
+def manual_unfold(input, kernel_size, stride):
+    batch_size, channels, height, width = input.shape
+    out_h = (height - kernel_size) // stride + 1
+    out_w = (width - kernel_size) // stride + 1
+    unfolded = input.unfold(2, kernel_size, stride).unfold(3, kernel_size, stride)
+    unfolded = unfolded.permute(0, 1, 4, 5, 2, 3).reshape(batch_size, channels * kernel_size * kernel_size,
+                                                          out_h * out_w)
+    return unfolded
 
 class MAJ3Fn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x):
         if x.dim() == 1:
-            x = x.unsqueeze(0)       # [1, 3]
+            x = x.unsqueeze(0)  # [1, 3]
             ctx.squeeze_back = True
         else:
             ctx.squeeze_back = False
 
-        xs = (x + 1) * 0.5           # [B,3], a,b,c ∈ [0,1]
+        xs = (x + 1) * 0.5  # [B,3], a,b,c ∈ [0,1]
         ctx.save_for_backward(xs)
 
         a, b, c = xs[:, 0], xs[:, 1], xs[:, 2]
         r = a * b + a * c + b * c - 2 * a * b * c
-        y = (2 * r - 1).unsqueeze(-1)   # [B,1]
+        y = (2 * r - 1).unsqueeze(-1)  # [B,1]
         return y
 
     @staticmethod
@@ -119,7 +127,7 @@ class Slayer(ABC):
 
             # Apply majority gate to all groups simultaneously
             # Process each group: (batch_size * num_groups, maj_dim, num_ints)
-            grouped_flat = grouped.view(batch_size * num_groups, 3, num_ints)
+            grouped_flat = grouped.reshape(batch_size * num_groups, 3, num_ints)
 
             # Apply majority_packed_batch to all groups at once
             maj_results = Slayer.MAJ3(grouped_flat)  # (batch_size * num_groups, num_ints)
@@ -177,7 +185,6 @@ class Slayer(ABC):
         pass
 
 
-
 class SConv2d(Slayer, nn.Module):
     # make sure Slayer comes before nn.Module
     def __init__(
@@ -189,7 +196,8 @@ class SConv2d(Slayer, nn.Module):
             padding=0,
             dilation=1,
             strict=True,
-            polarize=False):
+            polarize=False,
+            noisy=True):
 
         '''
         comments for additional parameters:
@@ -212,6 +220,7 @@ class SConv2d(Slayer, nn.Module):
 
         self.strict = strict
         self.polarize = polarize
+        self.noisy = noisy
         if polarize:
             self.kk = nn.Parameter(torch.ones(1), requires_grad=False)
 
@@ -246,6 +255,9 @@ class SConv2d(Slayer, nn.Module):
         else:
             weight = self.weight
 
+        # if self.noisy:
+        #     weight = weight + torch.randn_like(weight) * weight.std() * 0.05
+
         weight_flat = weight.view(self.out_channels, -1)  # [C_out, C_in*kh*kw]
 
         # Here the purpose is to replace the usual summation with stackMAJ in 2D convolution,
@@ -254,7 +266,6 @@ class SConv2d(Slayer, nn.Module):
         #      [N, 1, C_in*kh*kw, L]   *       [1, C_out, C_in*kh*kw, 1]
         # a certain element prod[n, m, k, l] means the k-th elementwise product in the l-th sliding-window position in the m-th channel of the n-th sample
 
-
         N, out_channels, _, L = prod.size()
 
         # move the target dimension(3rd) to the last, and reshape to fit the input shape of stackMAJ
@@ -262,22 +273,22 @@ class SConv2d(Slayer, nn.Module):
         flat_tensor = prod.reshape(-1, prod.shape[-1])  # (N*C_out*L, C_in*kh*kw)
 
         # conduct stackMAJ
-        maj_results = Slayer.stackMAJ3_sim(flat_tensor, strict=self.strict)     # [N*C_out*L, 1]
+        maj_results = Slayer.stackMAJ3_sim(flat_tensor, strict=self.strict)  # [N*C_out*L, 1]
 
         # squeeze
-        maj_results = maj_results.squeeze(1)        # [N*C_out*L, ]
+        maj_results = maj_results.squeeze(1)  # [N*C_out*L, ]
 
         # again reshape back to [N, C_out, L]
         unfolded = maj_results.reshape(N, out_channels, L)
 
-        out = unfolded.view(N, self.out_channels, H_out, W_out)     # [N, C_out, H_out, W_out]
+        out = unfolded.view(N, self.out_channels, H_out, W_out)  # [N, C_out, H_out, W_out]
         return out
 
     def prepare_Sforward(self, trans):
-        self.Sweight = trans.f2s(self.weight)   # [C_out, C_in, kh, kw, num_ints]
+        self.Sweight = trans.f2s(self.weight)  # [C_out, C_in, kh, kw, num_ints]
 
     def Sforward(self, stream):
-        N, C, H, W, num_ints = stream.shape     # here, num_ints means seq_len//32
+        N, C, H, W, num_ints = stream.shape  # here, num_ints means seq_len//32
         kh, kw = self.kernel_size
         sh, sw = self.stride
         ph, pw = self.padding
@@ -287,34 +298,35 @@ class SConv2d(Slayer, nn.Module):
         H_out = (H + 2 * ph - dh * (kh - 1) - 1) // sh + 1
         W_out = (W + 2 * pw - dw * (kw - 1) - 1) // sw + 1
 
-
         # To apply F.unfold to a 5D tensor, we need to first reshape to 4D and then reshape back to 5D
         # (1) reshape to [N*num_ints, C_in, H, W], and apply F.pad & F.unfold
-        stream = stream.to(torch.float64)   # F.unfold can only process float tensors
+        stream = stream.to(torch.float64)  # F.unfold can only process float tensors
         stream_reshaped = stream.permute(0, 4, 1, 2, 3).contiguous().view(N * num_ints, C, H, W)
-        stream_padded = F.pad(stream_reshaped, pad=(pw, pw, ph, ph), value=0)
+        stream_padded = F.pad(stream_reshaped, pad=(pw, pw, ph, ph), value=0)  # 0 -> 372882026
         unfolded = F.unfold(stream_padded, kernel_size=self.kernel_size, stride=self.stride,
-                            padding=0, dilation=self.dilation)   # [N*num_ints, C_in*kh*kw, L]
+                            padding=0, dilation=self.dilation)  # [N*num_ints, C_in*kh*kw, L]
 
         # (2) reshape back
         _, feature_dim, L = unfolded.shape
-        unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1) # [N, C_in*kh*kw, L, num_ints]
+        unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1)  # [N, C_in*kh*kw, L, num_ints]
 
-        unfolded = unfolded.to(torch.int64)     # convert back to int64
+        unfolded = unfolded.to(torch.int64)  # convert back to int64
 
         # prepare convolution kernel for stochastic forward propagation
-        Sweight = self.Sweight.view(self.out_channels, -1, num_ints) # [C_out, C_in*kh*kw, num_ints]
+        Sweight = self.Sweight.view(self.out_channels, -1, num_ints)  # [C_out, C_in*kh*kw, num_ints]
 
         # elementwise product using XNOR gates
         prod = torch.bitwise_xor(unfolded.unsqueeze(1), Sweight.unsqueeze(0).unsqueeze(-2))
-        prod = torch.bitwise_not(prod)      # [N, C_out, C_in*kh*kw, L, num_ints]
+        prod = torch.bitwise_not(prod)  # [N, C_out, C_in*kh*kw, L, num_ints]
+        mask32 = (1 << 32) - 1
+        prod = prod & mask32
 
         # conduct stackMAJ as summation
         prod = prod.permute(0, 1, 3, 2, 4)  # [N, C_out, L, C_in*kh*kw, num_ints]
-        prod = prod.reshape(-1, prod.shape[-2], prod.shape[-1])     # [N*C_out*L, C_in*kh*kw, num_ints]
-        out = Slayer.stackMAJ3(prod, strict=self.strict)   # [N*C_out*L, num_ints]
-        out = out.view(N, self.out_channels, L, num_ints)               # [N, C_out, L, num_ints]
-        out = out.view(N, self.out_channels, H_out, W_out, num_ints)    # [N, C_out, H_out, W_out, num_ints]
+        prod = prod.reshape(-1, prod.shape[-2], prod.shape[-1])  # [N*C_out*L, C_in*kh*kw, num_ints]
+        out = Slayer.stackMAJ3(prod, strict=self.strict)  # [N*C_out*L, num_ints]
+        out = out.view(N, self.out_channels, L, num_ints)  # [N, C_out, L, num_ints]
+        out = out.view(N, self.out_channels, H_out, W_out, num_ints)  # [N, C_out, H_out, W_out, num_ints]
         return out
 
 
@@ -345,14 +357,16 @@ class SAvgPool2d(Slayer, nn.Module):
         # reshape
         patches = patches.view(N, C, kh * kw, -1)  # [N, C_in, kh*kw, L]
         patches = patches.permute(0, 1, 3, 2)  # [N, C_in, L, kh*kw]
-        patches = patches.reshape(-1, patches.shape[-1])    # [N*C_in*L, kh*kw]
+        patches = patches.reshape(-1, patches.shape[-1])  # [N*C_in*L, kh*kw]
 
         # conduct stackMAJ
-        unfolded = Slayer.stackMAJ3_sim(patches, strict=self.strict)    # [N*C_in*L, 1]
+        unfolded = Slayer.stackMAJ3_sim(patches, strict=self.strict)  # [N*C_in*L, 1]
 
         # reshape back
         out = unfolded.reshape(N, C, H_out, W_out)  # [N, C, H_out, W_out]
-        return out
+
+        # return out
+        return torch.clamp(out, -1.0, 1.0)
 
     def prepare_Sforward(self, trans):
         pass
@@ -368,25 +382,26 @@ class SAvgPool2d(Slayer, nn.Module):
         W_out = (W + 2 * pw - kw) // sw + 1
 
         # unfold
-        stream = stream.to(torch.float64)   # F.unfold can only process float tensors
+        stream = stream.to(torch.float64)  # F.unfold can only process float tensors
         stream_reshaped = stream.permute(0, 4, 1, 2, 3).contiguous().view(N * num_ints, C, H, W)
         stream_padded = F.pad(stream_reshaped, (pw, pw, ph, ph), mode='constant', value=0)
         unfolded = F.unfold(stream_padded, kernel_size=self.kernel_size, stride=self.stride,
-                            padding=0)   # [N*num_ints, C_in*kh*kw, L]
+                            padding=0)  # [N*num_ints, C_in*kh*kw, L]
+
         _, feature_dim, L = unfolded.shape
-        unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1) # [N, C_in*kh*kw, L, num_ints]
+        unfolded = unfolded.view(N, num_ints, feature_dim, L).permute(0, 2, 3, 1)  # [N, C_in*kh*kw, L, num_ints]
         unfolded = unfolded.to(torch.int64)  # convert back to int64
 
         # reshape and conduct stackMAJ
-        unfolded = unfolded.reshape(N, C, kh*kw, L, num_ints).permute(0, 1, 3, 2, 4)    # [N, C_in, L, kh*kw, num_ints]
-        unfolded = unfolded.reshape(N*C*L, kh*kw, num_ints) # [N*C_in*L, kh*kw, num_ints]
-        out = Slayer.stackMAJ3(unfolded, strict=self.strict) # [N*C_in*L, num_ints]
+        unfolded = unfolded.reshape(N, C, kh * kw, L, num_ints).permute(0, 1, 3, 2, 4)  # [N, C_in, L, kh*kw, num_ints]
+        unfolded = unfolded.reshape(N * C * L, kh * kw, num_ints)  # [N*C_in*L, kh*kw, num_ints]
+        out = Slayer.stackMAJ3(unfolded, strict=self.strict)  # [N*C_in*L, num_ints]
 
         # reshape back
         out = out.reshape(N, C, L, num_ints)
         out = out.reshape(N, C, H_out, W_out, num_ints)
-        return out
 
+        return out
 
 
 class SLinear(Slayer, nn.Module):
@@ -429,13 +444,13 @@ class SLinear(Slayer, nn.Module):
 
             # reshape
             N, out_features, in_features = prod.shape
-            prod = prod.reshape(N*out_features, in_features)     # [batch_size*out_features, in_features]
+            prod = prod.reshape(N * out_features, in_features)  # [batch_size*out_features, in_features]
 
             # conduct stackMAJ
-            out = Slayer.stackMAJ3_sim(prod, strict=self.strict)   # [batch_size*out_features, 1]
+            out = Slayer.stackMAJ3_sim(prod, strict=self.strict)  # [batch_size*out_features, 1]
 
             # reshape back
-            out = out.reshape(N, out_features)      # [batch_size, out_features]
+            out = out.reshape(N, out_features)  # [batch_size, out_features]
 
         else:
             out = prod
@@ -456,13 +471,15 @@ class SLinear(Slayer, nn.Module):
         # elementwise product using xnor
         prod = torch.bitwise_xor(stream.unsqueeze(1), self.Sweight.unsqueeze(0))
         prod = torch.bitwise_not(prod)  # [batch_size, out_features, in_features, seq_len//32]
+        mask32 = (1 << 32) - 1
+        prod = prod & mask32
 
         # reshape
         prod = prod.reshape(batch_size * self.out_features, in_features,
                             num_ints)  # [batch_size*out_features, in_features, seq_len//32]
 
         # conduct stackMAJ
-        out = Slayer.stackMAJ3(prod, strict=self.strict) # [batch_size*out_features, seq_len//32]
+        out = Slayer.stackMAJ3(prod, strict=self.strict)  # [batch_size*out_features, seq_len//32]
         out = out.reshape(batch_size, self.out_features, num_ints)  # [batch_size, self.out_features, num_ints]
 
         return out
@@ -471,7 +488,7 @@ class SLinear(Slayer, nn.Module):
 class SActv(Slayer, nn.Module):
     def __init__(self, repeats):
         super().__init__()
-        self.repeats = repeats      # should be some power of 3
+        self.repeats = repeats  # should be some power of 3
 
     @staticmethod
     def right_shift_stack(packed: torch.Tensor, n: int, chunk_size: int = 16) -> torch.Tensor:
@@ -527,19 +544,19 @@ class SActv(Slayer, nn.Module):
     def Sforward(self, stream):
         if self.repeats > 0:
             # shift and stack
-            stack = self.right_shift_stack(stream, 3**self.repeats)  # [..., 3^n, seq_len//32]
+            stack = self.right_shift_stack(stream, 3 ** self.repeats)  # [..., 3^n, seq_len//32]
             fronts = stack.shape[:-2]
             n, num_ints = stack.shape[-2], stack.shape[-1]
 
             # combine the front dimensions
             stack = stack.reshape(-1, n, num_ints)  # [X, 3^n, num_ints],
-                                                    # where X is the product of the lengths of all other dimensions
+            # where X is the product of the lengths of all other dimensions
 
             # conduct stackMAJ
             out = Slayer.stackMAJ3(stack, strict=True)  # [X, num_ints]
 
             # reshape back
-            out = out.reshape(*fronts, num_ints)    # [..., num_ints]
+            out = out.reshape(*fronts, num_ints)  # [..., num_ints]
         else:
             out = stream
         return out

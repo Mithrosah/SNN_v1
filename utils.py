@@ -41,6 +41,7 @@ def load_checkpoint(path, model, mode):
                 kk_value = state_dict[kk_key]
 
                 layer.weight.data = torch.tanh(original_weight * kk_value)
+                # layer.weight.data = torch.sgn(original_weight * kk_value)
 
                 # print(f"processed {layer_name}")
             else:

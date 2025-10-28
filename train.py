@@ -6,9 +6,9 @@ import torch.nn as nn
 from accelerate import Accelerator
 from tqdm import tqdm
 
-from model import SMNIST, MNIST
+from model import SMNIST, SMNIST_CNN, MNIST
 from data import mnist_loader
-from utils import seed_everything, CustomScheduler
+from utils import seed_everything, CustomScheduler, CrossEntropyLossWithTemperature
 
 
 def train(model, train_dl, optimizer, loss_fn, accelerator, epoch):
@@ -85,19 +85,23 @@ def main(model, train_dl, valid_dl, optimizer, loss_fn, accelerator, num_epochs)
         if accelerator.is_main_process and valid_acc > highest:
             highest = valid_acc
             state_dict = accelerator.get_state_dict(model)
-            torch.save(state_dict, f'checkpoint/model.pth')
+            torch.save(state_dict, f'checkpoint/tmp.pth')
     accelerator.wait_for_everyone()
 
 if __name__ == '__main__':
     seed_everything(42)
     accelerator = Accelerator()
-    model = SMNIST()
-    train_dl, valid_dl = mnist_loader()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss_fn = nn.CrossEntropyLoss()
+
+    model = SMNIST_CNN(polarize=True)
+    model.set_kk(1)
+
+    train_dl, valid_dl = mnist_loader(batch_size=32)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+    loss_fn = CrossEntropyLossWithTemperature(temperature=0.35)
 
     os.makedirs('./checkpoint', exist_ok=True)
     main(model, train_dl, valid_dl, optimizer, loss_fn, accelerator, num_epochs=60)
+
     # run:
     # accelerate launch --num_processes=2 train.py
-
