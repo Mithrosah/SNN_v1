@@ -9,11 +9,8 @@ from utils import seed_everything, load_checkpoint
 
 
 def Sevaluate(checkpoint_path, valid_dl, seq_len, accelerator):
-    # model = SMNIST(polarize=False, seq_len=seq_len)
-    # load_checkpoint(checkpoint_path, model, 'p2np')
-
-    model = SMNIST_CNN(polarize=False, seq_len=seq_len)
-    load_checkpoint(checkpoint_path, model, 'p2np')
+    model = SMNIST_CNN(polarize=True, seq_len=seq_len)
+    model.load_state_dict(torch.load(checkpoint_path), strict=True)
 
     model, valid_dl = accelerator.prepare(model, valid_dl)
 
@@ -47,11 +44,8 @@ def Sevaluate(checkpoint_path, valid_dl, seq_len, accelerator):
 
 
 def evaluate(checkpoint_path, valid_dl, loss_fn, accelerator):
-    # model = SMNIST_CNN(polarize=True, seq_len=seq_len)
-    # model.load_state_dict(torch.load(checkpoint_path), strict=True)
-
-    model = SMNIST_CNN(polarize=False)
-    load_checkpoint(checkpoint_path, model, 'p2np')
+    model = SMNIST_CNN(polarize=True)
+    model.load_state_dict(torch.load(checkpoint_path), strict=True)
 
     model, valid_dl = accelerator.prepare(model, valid_dl)
 

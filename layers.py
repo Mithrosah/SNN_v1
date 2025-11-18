@@ -285,7 +285,10 @@ class SConv2d(Slayer, nn.Module):
         return out
 
     def prepare_Sforward(self, trans):
-        self.Sweight = trans.f2s(self.weight)  # [C_out, C_in, kh, kw, num_ints]
+        if self.polarize:
+            self.Sweight = trans.f2s(torch.tanh(self.kk*self.weight))
+        else:
+            self.Sweight = trans.f2s(self.weight)   # [C_out, C_in, kh, kw, num_ints]
 
     def Sforward(self, stream):
         N, C, H, W, num_ints = stream.shape  # here, num_ints means seq_len//32
@@ -458,7 +461,10 @@ class SLinear(Slayer, nn.Module):
         return out
 
     def prepare_Sforward(self, trans):
-        self.Sweight = trans.f2s(self.weight)  # [out_features, in_features, seq_len//32]
+        if self.polarize:
+            self.Sweight = trans.f2s(torch.tanh(self.kk*self.weight))
+        else:
+            self.Sweight = trans.f2s(self.weight)   # [out_features, in_features, seq_len//32]
 
     def Sforward(self, stream):
         '''
