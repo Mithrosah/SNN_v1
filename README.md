@@ -1,2 +1,2 @@
 # SNN_v1
-Implementing neural networks using stochastic computation and Majority Gates
+Implementing neural networks based on stochastic computation with Majority Gates
