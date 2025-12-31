@@ -1,4 +1,5 @@
 import os
+import sys
 import random
 import numpy as np
 import torch
@@ -17,7 +18,7 @@ def train(model, train_dl, optimizer, loss_fn, accelerator, epoch):
     total_seen = torch.tensor(0.0, device=accelerator.device)
     total_loss = torch.tensor(0.0, device=accelerator.device)
 
-    for data, target in tqdm(train_dl, desc=f'Training Epoch {epoch + 1:02d}', disable=not accelerator.is_local_main_process):
+    for data, target in tqdm(train_dl, desc=f'Training Epoch {epoch + 1:02d}', disable=not accelerator.is_local_main_process, file=sys.stderr):
         optimizer.zero_grad()
         pred = model(data)
         loss = loss_fn(pred, target)
@@ -47,7 +48,7 @@ def evaluate(model, valid_dl, loss_fn, accelerator, epoch):
     total_loss = torch.tensor(0.0, device=accelerator.device)
 
     with torch.no_grad():
-        for data, target in tqdm(valid_dl, desc=f'Validation Epoch {epoch + 1:02d}', disable=not accelerator.is_local_main_process):
+        for data, target in tqdm(valid_dl, desc=f'Validation Epoch {epoch + 1:02d}', disable=not accelerator.is_local_main_process, file=sys.stderr):
             pred = model(data)
             loss = loss_fn(pred, target)
 

@@ -1,4 +1,5 @@
 import torch
+import sys
 import torch.nn as nn
 from accelerate import Accelerator
 from tqdm import tqdm
@@ -26,7 +27,7 @@ def Sevaluate(checkpoint_path, valid_dl, seq_len, accelerator):
 
     with torch.no_grad():
         for data, target in tqdm(valid_dl, desc=f'Evaluating using bit stream',
-                                 disable=not accelerator.is_local_main_process):
+                                 disable=not accelerator.is_local_main_process, file=sys.stderr):
             pred = model.module.Sforward(data)
 
             batch_size = torch.tensor(len(target), device=accelerator.device, dtype=torch.float32)
@@ -59,7 +60,7 @@ def evaluate(checkpoint_path, valid_dl, loss_fn, accelerator):
     total_loss = torch.tensor(0.0, device=accelerator.device)
 
     with torch.no_grad():
-        for data, target in tqdm(valid_dl, desc=f'Evaluating', disable=not accelerator.is_local_main_process):
+        for data, target in tqdm(valid_dl, desc=f'Evaluating', disable=not accelerator.is_local_main_process, file=sys.stderr):
             pred = model(data)
             loss = loss_fn(pred, target)
 
